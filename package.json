@@ -1,0 +1,23 @@
+{
+  "name": "gleaner",
+  "version": "0.1.0",
+  "description": "Gleaner — reMarkable handwritten daily notes → transcribed markdown, task ledger, and reminders. Self-hosted on Umbrel.",
+  "type": "module",
+  "main": "src/index.js",
+  "bin": { "gleaner": "src/cli.js" },
+  "scripts": {
+    "start": "node src/index.js",
+    "ingest": "node src/cli.js ingest",
+    "doctor": "node src/cli.js doctor",
+    "test:fixture": "GLEANER_SOURCE=fixture GLEANER_LLM=mock GLEANER_DATA_DIR=./.testdata node src/cli.js ingest && GLEANER_SOURCE=fixture GLEANER_LLM=mock GLEANER_DATA_DIR=./.testdata node src/cli.js digest"
+  },
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "@anthropic-ai/sdk": "0.131.0",
+    "adm-zip": "0.6.1",
+    "better-sqlite3": "13.0.3",
+    "express": "4.22.3",
+    "node-cron": "4.6.0",
+    "pdfkit": "0.20.2"
+  }
+}

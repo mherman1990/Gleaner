@@ -1,0 +1,20 @@
+version: "3.7"
+
+services:
+  app_proxy:
+    environment:
+      APP_HOST: CHANGE-ME-gleaner_web_1   # <app id>_web_1
+      APP_PORT: 3717
+      # Browser UI stays behind Umbrel login; /api is for machines and is token-protected by Gleaner itself.
+      PROXY_AUTH_WHITELIST: "/api/*,/health"
+
+  web:
+    image: ghcr.io/CHANGE-ME/gleaner:0.1.0   # pin by digest once pushed: ...:0.1.0@sha256:...
+    restart: on-failure
+    stop_grace_period: 1m
+    user: "1000:1000"
+    environment:
+      TZ: America/Chicago
+      GLEANER_DATA_DIR: /data
+    volumes:
+      - ${APP_DATA_DIR}/data:/data

@@ -1,0 +1,11 @@
+# Plain docker compose (dev, or any non-Umbrel host). For Umbrel, use umbrel/ instead.
+services:
+  gleaner:
+    build: .
+    image: gleaner:dev
+    restart: unless-stopped
+    ports: ["3717:3717"]
+    environment:
+      TZ: America/Chicago
+    volumes:
+      - ./data:/data   # put gleaner.env, config.json, secrets/rmapi.conf here
