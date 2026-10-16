@@ -1,0 +1,10 @@
+node_modules
+.testdata
+data
+.git
+.github
+docs
+cowork
+umbrel
+fixtures
+test

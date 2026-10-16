@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Gleaner</title>
+<style>
+:root{--bg:#faf8f3;--fg:#1d1c1a;--mut:#6b675f;--line:#e4dfd3;--card:#fff;--acc:#3d6b35;--warn:#a2461f;color-scheme:light}
+@media (prefers-color-scheme:dark){:root{--bg:#161614;--fg:#ece8df;--mut:#9a958a;--line:#2e2c28;--card:#1f1e1b;--acc:#8fbf7f;--warn:#e08a63;color-scheme:dark}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:860px;margin:0 auto;padding:20px 16px 60px}
+header{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap}
+h1{font-size:22px;margin:0}h2{font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:var(--mut);margin:28px 0 8px}
+button{font:inherit;border:1px solid var(--line);background:var(--card);color:var(--fg);border-radius:6px;padding:4px 10px;cursor:pointer}
+button:hover{border-color:var(--acc)}button.primary{background:var(--acc);color:var(--bg);border-color:var(--acc)}
+.item{display:grid;grid-template-columns:44px 1fr auto;gap:10px;align-items:start;padding:10px 0;border-bottom:1px solid var(--line)}
+.code{font-weight:700;font-size:18px;text-align:right}.meta{color:var(--mut);font-size:13px}.due-past{color:var(--warn);font-weight:600}
+.acts{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+pre{white-space:pre-wrap;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:14px;font:13px/1.5 ui-monospace,Menlo,monospace;overflow-x:auto}
+.status{color:var(--mut);font-size:13px}
+</style>
+</head>
+<body>
+<main>
+<header>
+  <h1>Gleaner</h1>
+  <div><button id="ingest">Ingest now</button> <button id="digest" class="primary">Rebuild digest</button></div>
+</header>
+<p class="status" id="status">Loading…</p>
+<h2>Open loops</h2>
+<div id="items"></div>
+<h2>Today</h2>
+<pre id="today">—</pre>
+</main>
+<script>
+const API = 'ui/api';
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const today = new Date().toLocaleDateString('en-CA');
+const nextFriday = () => { const d = new Date(); d.setDate(d.getDate() + ((5 - d.getDay() + 7) % 7 || 7)); return d.toLocaleDateString('en-CA'); };
+
+async function load() {
+  const [items, status] = await Promise.all([fetch(`${API}/items`).then(r => r.json()), fetch(`${API}/status`).then(r => r.json())]);
+  $('items').innerHTML = items.length ? items.map((i) => `
+    <div class="item">
+      <div class="code">${i.code}</div>
+      <div><div>${esc(i.text)}${i.priority ? ' <b>!</b>' : ''}</div>
+        <div class="meta">${[i.kind, i.person, i.due ? `<span class="${i.due < today ? 'due-past' : ''}">due ${i.due}</span>` : '', i.carry_days > 1 ? `carried ${i.carry_days}d` : '', (i.tags || []).map(t => '#' + esc(t)).join(' ')].filter(Boolean).join(' · ')}</div></div>
+      <div class="acts">
+        <button data-c="${i.code}" data-s="done">Done</button>
+        <button data-c="${i.code}" data-s="snoozed">Fri</button>
+        <button data-c="${i.code}" data-s="dropped">Drop</button>
+      </div>
+    </div>`).join('') : '<p class="meta">Nothing open.</p>';
+  const last = status.runs?.[0];
+  $('status').textContent = `${items.length} open · last run: ${last ? `${last.kind} ${last.ok ? 'ok' : 'FAILED'} ${new Date(last.started_at).toLocaleString()}` : 'none'}${status.busy ? ` · running ${status.busy}` : ''}`;
+  const d = await fetch(`${API}/digest/today`);
+  $('today').textContent = d.ok ? await d.text() : 'No digest yet today.';
+}
+
+document.addEventListener('click', async (e) => {
+  const b = e.target.closest('button[data-c]');
+  if (!b) return;
+  const body = { status: b.dataset.s, ...(b.dataset.s === 'snoozed' ? { until: nextFriday() } : {}) };
+  await fetch(`${API}/items/${b.dataset.c}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  load();
+});
+$('ingest').onclick = async () => { await fetch(`${API}/ingest`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"mode":"sync"}' }); setTimeout(load, 1500); };
+$('digest').onclick = async () => { $('today').textContent = 'Building…'; await fetch(`${API}/digest`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); load(); };
+load();
+</script>
+</body>
+</html>

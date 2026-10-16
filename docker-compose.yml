@@ -1,0 +1,13 @@
+# Plain docker compose (dev, or any non-Umbrel host). For Umbrel, use umbrel/ instead.
+# Without Umbrel's proxy in front, the browser UI and its /ui/api have no login of their own; keep this port on a
+# trusted network. /api still requires GLEANER_API_TOKEN.
+services:
+  gleaner:
+    build: .
+    image: gleaner:dev
+    restart: unless-stopped
+    ports: ["3717:3717"]
+    environment:
+      TZ: America/Chicago
+    volumes:
+      - ./data:/data   # put gleaner.env, config.json, secrets/rmapi.conf here

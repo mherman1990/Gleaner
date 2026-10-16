@@ -1,0 +1,19 @@
+{
+  "source": { "adapter": "rmapi", "folder": "/Daily" },
+  "llm": {
+    "transcribeModel": "claude-sonnet-5-5",
+    "triageModel": "claude-haiku-5-5",
+    "digestModel": "claude-sonnet-5-5",
+    "weeklyModel": "claude-opus-5-5",
+    "useBatch": true
+  },
+  "schedule": {
+    "ingestNightly": "30 21 * * *",
+    "ingestMorning": "15 6 * * 1-5",
+    "morningDigest": "30 6 * * 1-5",
+    "reminderSweep": "*/30 7-18 * * 1-5",
+    "weeklyReview": "0 18 * * 0"
+  },
+  "reminders": { "staleDays": 7, "carryFlagAt": 3, "maxNudgesPerItem": 3 },
+  "notify": { "tabletTodaySheet": true, "tabletTodayFolder": "/Daily", "tabletTodayName": "_Today" }
+}
