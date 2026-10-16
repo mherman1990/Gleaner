@@ -2,10 +2,11 @@ import cron from 'node-cron';
 import { config } from './config.js';
 import { ingest } from './pipeline/ingest.js';
 import { morningDigest, reminderSweep, weeklyReview } from './digest/digest.js';
+import { exclusive } from './jobs.js';
 
 const jobs = {
-  ingestNightly: () => ingest({ mode: 'batch' }),
-  ingestMorning: () => ingest({ mode: 'sync' }),
+  ingestNightly: () => exclusive('ingest:batch', () => ingest({ mode: 'batch' })),
+  ingestMorning: () => exclusive('ingest:sync', () => ingest({ mode: 'sync' })),
   morningDigest: () => morningDigest({ push: true }),
   reminderSweep: () => reminderSweep(),
   weeklyReview: () => weeklyReview({ push: true }),

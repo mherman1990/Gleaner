@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      # Same renderer versions as the Dockerfile (python3 there is bookworm's 3.11).
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libcairo2
+      - run: pip install rmc==0.3.0 rmscene==0.6.1 cairosvg==2.7.1
+      - run: npm ci
+      - run: npm test
+
+  image:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image (amd64, not pushed)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: gleaner:ci
+      - name: Smoke test
+        run: |
+          docker run --rm --entrypoint sh gleaner:ci -c '
+            rmapi version && rmc --version &&
+            node -e "new (require(\"better-sqlite3\"))(\":memory:\")" &&
+            python3 -c "import cairosvg"'

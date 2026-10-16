@@ -43,7 +43,8 @@ def main():
         w = max_edge
         h = max(1, round(max_edge * vh / vw))
 
-    if strokes:
+    # A page with only typed text (Type Folio) has no strokes but still needs transcribing.
+    if strokes or typed:
         dst.parent.mkdir(parents=True, exist_ok=True)
         cairosvg.svg2png(bytestring=svg.encode("utf-8"), write_to=str(dst),
                          output_width=w, output_height=h, background_color="white")

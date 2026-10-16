@@ -81,8 +81,9 @@ export async function morningDigest({ push = true } = {}) {
 export async function reminderSweep() {
   const today = localDate();
   const b = buckets(today);
+  // last_nudged is a UTC timestamp; compare its local date (a 6:30pm CST nudge is already "tomorrow" in UTC).
   const due = [...b.overdue, ...b.dueToday].filter((i) =>
-    (!i.last_nudged || i.last_nudged.slice(0, 10) < today) && i.nudge_count < config.reminders.maxNudgesPerItem);
+    (!i.last_nudged || localDate(new Date(i.last_nudged)) < today) && i.nudge_count < config.reminders.maxNudgesPerItem);
   if (!due.length) return { nudged: 0 };
   await notify({
     title: `${due.length} due${b.overdue.length ? ` (${b.overdue.length} overdue)` : ''}`,

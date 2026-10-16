@@ -9,7 +9,7 @@ services:
       PROXY_AUTH_WHITELIST: "/api/*,/health"
 
   web:
-    image: ghcr.io/CHANGE-ME/gleaner:0.1.0   # pin by digest once pushed: ...:0.1.0@sha256:...
+    image: ghcr.io/mherman1990/gleaner:0.1.0   # pin by digest (the Image workflow's run summary prints it): ...:0.1.0@sha256:...
     restart: on-failure
     stop_grace_period: 1m
     user: "1000:1000"

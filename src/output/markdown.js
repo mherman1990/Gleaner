@@ -40,13 +40,26 @@ export function renderDay(date) {
 }
 
 export function writeDayFiles(dates) {
-  for (const d of dates.filter(Boolean)) {
+  for (const d of new Set(dates.filter(Boolean))) {
     const md = renderDay(d);
-    if (!md) continue;
     const f = dayFilePath(d);
+    if (!md) { fs.rmSync(f, { force: true }); continue; } // its last page moved to another date
     fs.mkdirSync(path.dirname(f), { recursive: true });
     fs.writeFileSync(f, md);
   }
+}
+
+/** Page-dates on which these items were written — the day files whose item lines show their status. */
+export function mentionDates(itemIds) {
+  if (!itemIds.length) return [];
+  const q = db.prepare('SELECT DISTINCT page_date FROM item_mentions WHERE item_id=?');
+  return [...new Set(itemIds.flatMap((id) => q.all(id).map((r) => r.page_date)))];
+}
+
+/** After an item changes outside ingest (API, CLI): rewrite its day files and the open-loop list. */
+export function refreshItemOutputs(itemIds) {
+  writeDayFiles(mentionDates(itemIds));
+  writeOpenLoops();
 }
 
 export function renderOpenLoops() {

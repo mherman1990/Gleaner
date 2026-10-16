@@ -16,7 +16,9 @@ export function priorItemsForPage(pageId) {
 }
 
 function mention(itemId, pageId, pageDate) {
-  db.prepare('INSERT OR IGNORE INTO item_mentions (item_id, page_id, page_date) VALUES (?,?,?)').run(itemId, pageId, pageDate);
+  // Upsert: a re-transcription can move the page to another date (e.g. a date written in later).
+  db.prepare(`INSERT INTO item_mentions (item_id, page_id, page_date) VALUES (?,?,?)
+    ON CONFLICT(item_id, page_id) DO UPDATE SET page_date=excluded.page_date`).run(itemId, pageId, pageDate);
   const days = db.prepare('SELECT COUNT(DISTINCT page_date) AS n FROM item_mentions WHERE item_id=?').get(itemId).n;
   db.prepare(`UPDATE items SET carry_days=?, last_page_id=?, last_seen=MAX(COALESCE(last_seen,''), ?) WHERE id=?`)
     .run(Math.max(1, days), pageId, pageDate, itemId);
@@ -55,9 +57,13 @@ async function matchAgainstOpen(candidates, excludeIds) {
   return out;
 }
 
-/** Apply one record_page result. Returns a short summary for logging. */
+/**
+ * Apply one record_page result. Returns a short summary for logging, plus what changed so the caller can
+ * regenerate the right markdown: prevDate (the page's old date, if it moved) and itemIds (every item touched).
+ */
 export async function applyPageResult(pageRow, result, fallbackDate) {
   const pageDate = isDate(result.page_date) ? result.page_date : fallbackDate;
+  const prevDate = db.prepare('SELECT page_date FROM pages WHERE id=?').get(pageRow.id)?.page_date || null;
   db.prepare(`UPDATE pages SET status='transcribed', transcribed_hash=rm_hash, page_date=?, summary=?, tags=?, transcription_md=?,
     legibility=?, uncertain=?, batch_id=NULL, error=NULL, updated_at=datetime('now') WHERE id=?`)
     .run(pageDate, result.summary || '', J(result.tags), result.transcription_md || '', result.legibility || null, J(result.uncertain_spans), pageRow.id);
@@ -76,21 +82,25 @@ export async function applyPageResult(pageRow, result, fallbackDate) {
     } else fresh.push(it);
   }
 
-  // Items that came only from this page and vanished from it were erased on the tablet → dropped.
-  for (const p of prior) {
-    if (touched.has(p.id) || p.status !== 'open') continue;
-    const others = db.prepare('SELECT COUNT(*) AS n FROM item_mentions WHERE item_id=? AND page_id<>?').get(p.id, pageRow.id).n;
-    if (!others) setItemStatus(p.id, 'dropped', 'erased', 'no longer on source page');
-  }
-
-  // Carry-forward detection for new items.
+  // Carry-forward detection for new items. This runs before the erase pass on purpose: this page's own earlier
+  // items are still open here, so one the model re-extracted without existing_item_id (or reworded) matches
+  // and keeps its number instead of being dropped as "erased" and re-created under a new one.
   const matches = await matchAgainstOpen(fresh, touched);
   let created = 0, carried = 0;
   fresh.forEach((it, idx) => {
     const existing = matches.get(idx);
-    if (existing) { refreshItem(existing, it); mention(existing, pageRow.id, pageDate); carried++; }
-    else { insertItem(it, pageRow.id, pageDate); created++; }
+    if (existing) {
+      refreshItem(existing, it); mention(existing, pageRow.id, pageDate); touched.add(existing);
+      if (!priorIds.has(existing)) carried++;
+    } else { touched.add(insertItem(it, pageRow.id, pageDate)); created++; }
   });
+
+  // Items that came only from this page and vanished from it were erased on the tablet → dropped.
+  for (const p of prior) {
+    if (touched.has(p.id) || p.status !== 'open') continue;
+    const others = db.prepare('SELECT COUNT(*) AS n FROM item_mentions WHERE item_id=? AND page_id<>?').get(p.id, pageRow.id).n;
+    if (!others) { setItemStatus(p.id, 'dropped', 'erased', 'no longer on source page'); touched.add(p.id); }
+  }
 
   // Number-based closes / snoozes.
   let closed = 0;
@@ -99,9 +109,11 @@ export async function applyPageResult(pageRow, result, fallbackDate) {
     if (!item || item.status === 'done' || item.status === 'dropped') continue;
     if (c.action === 'snooze' && isDate(c.snooze_until)) setItemStatus(item.id, 'snoozed', 'handwriting', c.evidence, c.snooze_until);
     else if (c.action === 'done' || c.action === 'dropped') { setItemStatus(item.id, c.action, 'handwriting', c.evidence); closed++; }
+    else continue;
+    touched.add(item.id);
   }
 
-  return { pageDate, created, carried, closed };
+  return { pageDate, prevDate, created, carried, closed, itemIds: [...touched] };
 }
 
 export const itemTags = (i) => P(i.tags);

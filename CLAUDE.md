@@ -27,8 +27,10 @@ Read README.md for setup and docs/HANDWRITING.md for the notation the extractor 
   published at least two weeks ago.
 - Config is defaults ← `/data/config.json` ← env, with secrets in `/data/gleaner.env`. Never commit secrets, `data/`, or `.testdata/`.
 - Dates are local (`localDate()` in `src/config.js`, America/Chicago), never UTC slices.
+- Tests: `npm test` (node:test, mock LLM, temp data dirs). The end-to-end tests need `rmc` and `cairosvg` on PATH
+  and skip without them. Run it before every push; CI runs it plus an image build on each PR.
 - Offline test loop: `GLEANER_SOURCE=fixture GLEANER_LLM=mock GLEANER_DATA_DIR=./.testdata GLEANER_FIXTURE_DIR=./fixtures node src/cli.js ingest`.
-  Fixture layout is `fixtures/<Notebook>/<NN>.rm`. Sample `.rm` files are in the ricklupton/rmc repo under `tests/rm/`.
+  Fixture layout is `fixtures/<Notebook>/<NN>.rm`; the committed pages come from ricklupton/rmc `tests/rm/` (MIT).
 
 ## Guardrails
 - **Do not enter credentials.** Matt registers rmapi himself (one-time code) and sets `ANTHROPIC_API_KEY` himself.
@@ -40,28 +42,40 @@ Read README.md for setup and docs/HANDWRITING.md for the notation the extractor 
   and don't add any new outbound destination without asking.
 
 ## v0.1 status: what's verified and what isn't
-Verified offline, with fixtures and mock LLM:
-- the render chain on real `.rm` v6 files,
+Verified offline with fixtures and the mock LLM, and covered by `npm test`:
+- the render chain on real `.rm` v6 files, including typed-text-only pages,
 - the batch and sync ingest paths, including idempotent re-runs,
-- page-edit re-transcription without duplicates,
-- cross-page carry-forward,
-- the digest and Today PDF,
-- the API, its token auth, and snooze,
-- the reminder sweep, the weekly review, and the browser UI.
+- page-edit re-transcription without duplicates or renumbering,
+- cross-page carry-forward, erase-to-drop, and number closes/snoozes,
+- markdown kept in sync when items change later (closes, carries, API/CLI status changes, a page's date moving),
+- the digest and Today PDF, the reminder sweep, and the weekly review,
+- the API, its token auth, date validation, and snooze,
+- one ingest at a time across the scheduler and the API (`src/jobs.js`).
+
+Verified against ddvk/rmapi v0.0.35's source (not yet against the live account):
+- `rmapi -ni -json find /Daily` prints a JSON array of `{id, name, type, version, modifiedClient, parent, tags, …}`.
+  WARNING log lines also go to **stdout**, so `parseFindJson()` reads from where the array starts.
+- `version` is the doc's `.metadata` version, which current firmware doesn't bump, so change detection keys on
+  `version:modifiedClient`.
+- `get --id <id>` writes `<name>.rmdoc` into the cwd: a zip of `<docId>.content`, `<docId>.metadata`, and `<docId>/<pageId>.rm`.
+- Release assets are `rmapi-linux-{amd64,arm64}.tar.gz`, with the `rmapi` binary at the archive root.
+
+Verified in Docker: the image builds for amd64 and for arm64 (under QEMU). On both, rmapi, rmc, cairosvg, and the
+better-sqlite3 native module load, and the arm64 container runs fixture ingest and digest end to end.
 
 Not yet verified, in priority order:
-1. **rmapi against the live account.** The JSON shape of `rmapi -ni -json find /Daily` is assumed (see the ls
-   schema in the ddvk/rmapi README). Also confirm what `get --id` writes (`.rmdoc` or `.zip`) and its internal layout.
-   Run `node src/cli.js doctor` first, and fix `listDocuments()`/`pull()` to match reality.
+1. **rmapi against the live account.** Run `node src/cli.js doctor`. Expect `documents` > 0 and a JSON `findSample`.
+   Then run one ingest and confirm that a page edited on the tablet is picked up on the next run.
 2. **Real model output.**
    - Check that forced-tool calls succeed on the configured model IDs.
    - Check that the extraction isn't noisy: tune `NOTATION` and the rules in `src/llm/prompts.js` against Matt's actual pages.
    - Check prompt caching hits in `/api/status` (`cache_read` > 0 on the second page of a run).
-3. **Docker build on arm64.** Watch for the better-sqlite3 prebuild and the rmapi arm64 tarball layout.
-4. **Umbrel install.** Use the app id and store prefix from his existing community app store (the same repo pattern as Spotter),
-   and confirm `PROXY_AUTH_WHITELIST` lets `/api/*` through while the UI stays behind Umbrel login.
+3. **On the Pi itself.** Check render time per page and memory use during a batch.
+4. **Umbrel install.** Use the app id and store prefix from his existing community app store (the same repo pattern as Spotter).
+   Confirm that `PROXY_AUTH_WHITELIST` lets nested paths like `/api/items/14` through while the UI stays behind Umbrel login.
+   Other store apps (e.g. Bazarr) rely on `"/api/*"` for nested APIs, so this should hold.
 
 ## Backlog (not v0.1)
 - Read annotations on the `_Today` PDF by compositing strokes over the rendered PDF page, so ticks on the sheet close items.
 - A remote MCP endpoint so remote (not computer-bound) Cowork tasks can query the ledger.
-- Automated tests around `ledger.js` using fixture pages plus canned model results.
+- The job lock is in-process. A `docker exec … cli.js ingest` running alongside the service isn't covered by it.

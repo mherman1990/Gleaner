@@ -13,8 +13,8 @@ ARG RMAPI_VERSION=v0.0.35
 RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 python3-venv libcairo2 fonts-dejavu-core ca-certificates curl openssh-client tar \
     && rm -rf /var/lib/apt/lists/*
-# Renderer: rmc (.rm v6 → SVG) + cairosvg (SVG → PNG), pinned
-RUN python3 -m venv /opt/py && /opt/py/bin/pip install --no-cache-dir rmc==0.3.0 cairosvg==2.7.1
+# Renderer: rmc (.rm v6 → SVG) + cairosvg (SVG → PNG), pinned. rmscene is rmc's .rm parser; pin it too.
+RUN python3 -m venv /opt/py && /opt/py/bin/pip install --no-cache-dir rmc==0.3.0 rmscene==0.6.1 cairosvg==2.7.1
 # Cloud client: ddvk/rmapi (maintained fork), pinned release binary
 RUN curl -fsSL "https://github.com/ddvk/rmapi/releases/download/${RMAPI_VERSION}/rmapi-linux-${TARGETARCH}.tar.gz" \
       | tar xz -C /usr/local/bin rmapi && chmod +x /usr/local/bin/rmapi

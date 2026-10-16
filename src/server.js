@@ -8,12 +8,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config, paths, localDate } from './config.js';
 import { db, P, openItems, setItemStatus } from './db.js';
-import { renderOpenLoops, dayFilePath, writeOpenLoops } from './output/markdown.js';
+import { renderOpenLoops, dayFilePath, refreshItemOutputs } from './output/markdown.js';
 import { ingest } from './pipeline/ingest.js';
 import { morningDigest, addDays } from './digest/digest.js';
+import { busy, exclusive } from './jobs.js';
 
 const PUBLIC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../public');
-let busy = null; // single-flight guard for long jobs
+const isDate = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s || '') && !Number.isNaN(Date.parse(s));
 
 function router() {
   const r = express.Router();
@@ -32,9 +33,9 @@ function router() {
     if (!item) return res.status(404).json({ error: 'no such item' });
     const { status, until, note } = req.body || {};
     if (!['done', 'dropped', 'open', 'snoozed'].includes(status)) return res.status(400).json({ error: 'status must be done|dropped|open|snoozed' });
-    if (status === 'snoozed' && !/^\d{4}-\d{2}-\d{2}$/.test(until || '')) return res.status(400).json({ error: 'snoozed needs until=YYYY-MM-DD' });
+    if (status === 'snoozed' && !isDate(until)) return res.status(400).json({ error: 'snoozed needs until=YYYY-MM-DD' });
     setItemStatus(item.id, status, 'api', note || null, status === 'snoozed' ? until : null);
-    writeOpenLoops();
+    refreshItemOutputs([item.id]);
     const row = db.prepare('SELECT * FROM items WHERE id=?').get(item.id);
     res.json({ ...row, tags: P(row.tags) });
   });
@@ -52,7 +53,9 @@ function router() {
   // /notes?from=2026-10-12&to=2026-10-16  (defaults: last 3 days) → concatenated markdown
   r.get('/notes', (req, res) => {
     const to = req.query.to || localDate();
-    const from = req.query.from || addDays(to, -2);
+    const from = req.query.from || (isDate(to) ? addDays(to, -2) : to);
+    if (!isDate(from) || !isDate(to)) return res.status(400).json({ error: 'from/to must be YYYY-MM-DD' });
+    if (from > to || addDays(from, 366) < to) return res.status(400).json({ error: 'from..to must be a range of at most a year' });
     const parts = [];
     for (let d = from; d <= to; d = addDays(d, 1)) {
       const f = dayFilePath(d);
@@ -62,6 +65,7 @@ function router() {
   });
 
   r.get('/notes/:date', (req, res) => {
+    if (!isDate(req.params.date)) return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
     const f = dayFilePath(req.params.date);
     fs.existsSync(f) ? res.type('text/markdown').send(fs.readFileSync(f, 'utf8')) : res.status(404).send('none');
   });
@@ -73,11 +77,10 @@ function router() {
   });
 
   r.post('/ingest', (req, res) => {
-    if (busy) return res.status(409).json({ error: `busy: ${busy}` });
+    if (busy()) return res.status(409).json({ error: `busy: ${busy()}` });
     const mode = req.body?.mode === 'batch' ? 'batch' : 'sync';
-    busy = `ingest:${mode}`;
-    ingest({ mode }).catch((e) => console.error(e)).finally(() => (busy = null));
-    res.status(202).json({ started: busy });
+    exclusive(`ingest:${mode}`, () => ingest({ mode })).catch((e) => console.error('[api] ingest failed:', e.message));
+    res.status(202).json({ started: `ingest:${mode}` });
   });
 
   r.post('/digest', async (req, res) => {
@@ -86,7 +89,7 @@ function router() {
   });
 
   r.get('/status', (_req, res) => res.json({
-    busy,
+    busy: busy(),
     runs: db.prepare('SELECT kind, started_at, ended_at, ok, substr(detail,1,300) AS detail FROM runs ORDER BY id DESC LIMIT 10').all(),
     pages: db.prepare('SELECT status, COUNT(*) AS n FROM pages GROUP BY status').all(),
     usage30d: db.prepare(`SELECT model, purpose, batch, SUM(input_tokens) AS input, SUM(output_tokens) AS output,
@@ -109,7 +112,7 @@ export function startServer() {
   app.use('/api', requireToken, router());
   app.use('/ui/api', router());
   app.use(express.static(PUBLIC));
-  app.listen(config.server.port, () => console.log(`[server] listening on :${config.server.port}`));
+  const server = app.listen(config.server.port, () => console.log(`[server] listening on :${server.address().port}`));
   if (!config.server.apiToken) console.warn('[server] GLEANER_API_TOKEN not set — /api is open to anything that can reach this port');
-  return app;
+  return server;
 }

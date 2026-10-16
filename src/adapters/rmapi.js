@@ -33,12 +33,23 @@ export async function doctor() {
   return out;
 }
 
+/**
+ * The JSON array from `rmapi -json find`. rmapi sends WARNING log lines to stdout too, so parse from the line
+ * where the array starts rather than the whole buffer. Text-mode lines ("[f] /Daily/x") never match.
+ */
+export function parseFindJson(raw) {
+  const start = raw.search(/^\[\s*(\{|\]|$)/m);
+  if (start < 0) return null;
+  const body = raw.slice(start);
+  try { return JSON.parse(body); } catch { /* trailing log lines */ }
+  try { return JSON.parse(body.slice(0, body.lastIndexOf(']') + 1)); } catch { return null; }
+}
+
 /** Documents (notebooks) under the configured folder. */
 export async function listDocuments() {
   const root = config.source.folder;
   const raw = await rmapi(['-json', 'find', root]);
-  let nodes;
-  try { nodes = JSON.parse(raw); } catch { nodes = null; }
+  const nodes = parseFindJson(raw);
 
   if (Array.isArray(nodes)) {
     const byId = new Map(nodes.map((n) => [n.id, n]));
@@ -47,12 +58,15 @@ export async function listDocuments() {
       for (let p = byId.get(n.parent); p; p = byId.get(p.parent)) parts.unshift(p.name);
       return parts.join('/');
     };
+    // `version` comes from the doc's .metadata, which current firmware no longer bumps (often 0), so it can't
+    // detect edits on its own. modifiedClient (metadata lastModified) changes on every edit; key on both.
     return nodes
       .filter((n) => n.type === 'DocumentType')
-      .map((n) => ({ id: n.id, name: n.name, folder: folderPath(n) || root, version: String(n.version ?? ''), modified: n.modifiedClient || null }));
+      .map((n) => ({ id: n.id, name: n.name, folder: folderPath(n) || root, version: `${n.version ?? ''}:${n.modifiedClient ?? ''}`, modified: n.modifiedClient || null }));
   }
 
   // Text fallback: lines like "[f] /Daily/2026-10 Daily" — no ids, so we key on path.
+  console.warn('[rmapi] find output was not JSON; falling back to text listing (every document is re-pulled each run)');
   return raw.split('\n').map((l) => l.match(/^\[f\]\s+(.+)$/)).filter(Boolean).map((m) => {
     const p = m[1].trim();
     return { id: null, path: p, name: path.posix.basename(p), folder: path.posix.dirname(p), version: '', modified: null };

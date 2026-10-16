@@ -6,7 +6,7 @@ import { renderPage } from './render.js';
 import { applyPageResult, priorItemsForPage } from './ledger.js';
 import { toolParams, callTool, submitBatch, collectBatch } from '../llm/client.js';
 import { transcribeSystem, openLoopsBlock, RECORD_PAGE_TOOL, transcribeUser } from '../llm/prompts.js';
-import { writeDayFiles, writeOpenLoops } from '../output/markdown.js';
+import { writeDayFiles, writeOpenLoops, mentionDates } from '../output/markdown.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (...a) => console.log('[ingest]', ...a);
@@ -34,8 +34,8 @@ async function pullAndRender() {
       db.prepare(`INSERT INTO pages (id, doc_id, page_index, rm_hash, status, png_path, typed_text, updated_at) VALUES (?,?,?,?,?,?,?,?)
         ON CONFLICT(id) DO UPDATE SET page_index=excluded.page_index, rm_hash=excluded.rm_hash, status=excluded.status,
           png_path=excluded.png_path, typed_text=excluded.typed_text, batch_id=NULL, updated_at=excluded.updated_at`)
-        .run(p.id, bundle.id, p.index, hash, r.strokes ? 'rendered' : 'blank', r.pngPath, r.typed_text, now());
-      if (r.strokes) rendered++;
+        .run(p.id, bundle.id, p.index, hash, r.pngPath ? 'rendered' : 'blank', r.pngPath, r.typed_text, now());
+      if (r.pngPath) rendered++;
     }
   }
   return { docs: docs.length, rendered };
@@ -64,19 +64,28 @@ function buildParams(pageRow, loopsBlock) {
 
 async function applyAll(rows, results) {
   const dates = new Set();
+  const itemIds = new Set();
   const tally = { created: 0, carried: 0, closed: 0, failed: 0 };
   // Sequential on purpose: dedupe must see items created by earlier pages in the same run.
-  for (const row of rows.sort((a, b) => (a.doc_id + a.page_index).localeCompare(b.doc_id + b.page_index))) {
+  for (const row of rows.sort((a, b) => a.doc_id.localeCompare(b.doc_id) || a.page_index - b.page_index)) {
     const r = results.get(row.id);
     if (!r?.ok) {
       db.prepare(`UPDATE pages SET status='error', error=?, batch_id=NULL WHERE id=?`).run(r?.error || 'no result', row.id);
       tally.failed++; continue;
     }
     const s = await applyPageResult(row, r.input, pageContext(row).dateHint);
-    dates.add(s.pageDate); tally.created += s.created; tally.carried += s.carried; tally.closed += s.closed;
+    dates.add(s.pageDate); if (s.prevDate) dates.add(s.prevDate);
+    s.itemIds.forEach((id) => itemIds.add(id));
+    tally.created += s.created; tally.carried += s.carried; tally.closed += s.closed;
   }
+  // Earlier days whose items were just carried, closed, or dropped show stale item lines until rewritten.
+  mentionDates([...itemIds]).forEach((d) => dates.add(d));
   return { dates, tally };
 }
+
+// Batch custom_id must match ^[a-zA-Z0-9_-]{1,64}$ — tablet page UUIDs already do.
+const cid = (pageId) => pageId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+const byPageId = (rows, res) => new Map(rows.map((r) => [r.id, res.get(cid(r.id))]));
 
 /** Collect any finished batches from earlier runs (e.g. the process restarted mid-poll). */
 async function collectPending() {
@@ -86,7 +95,7 @@ async function collectPending() {
     const res = await collectBatch(b.id, RECORD_PAGE_TOOL.name, 'transcribe');
     if (!res) continue;
     const rows = db.prepare(`SELECT * FROM pages WHERE batch_id=?`).all(b.id);
-    const out = await applyAll(rows, res);
+    const out = await applyAll(rows, byPageId(rows, res));
     out.dates.forEach((d) => dates.add(d));
     db.prepare(`UPDATE batches SET status='ended', ended_at=? WHERE id=?`).run(now(), b.id);
     log(`batch ${b.id}:`, out.tally);
@@ -108,10 +117,7 @@ export async function ingest({ mode = 'batch' } = {}) {
     let tally = { created: 0, carried: 0, closed: 0, failed: 0 };
 
     if (rows.length && mode === 'batch' && config.llm.useBatch) {
-      // custom_id must match ^[a-zA-Z0-9_-]{1,64}$ — tablet page UUIDs already do.
-      const cid = (r) => r.id.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
-      const byCid = new Map(rows.map((r) => [cid(r), r.id]));
-      const batchId = await submitBatch(rows.map((r) => ({ custom_id: cid(r), params: buildParams(r, loops) })));
+      const batchId = await submitBatch(rows.map((r) => ({ custom_id: cid(r.id), params: buildParams(r, loops) })));
       db.prepare(`INSERT INTO batches (id, kind, status, created_at) VALUES (?,?,?,?)`).run(batchId, 'transcribe', 'in_progress', now());
       const upd = db.prepare(`UPDATE pages SET status='queued', batch_id=? WHERE id=?`);
       rows.forEach((r) => upd.run(batchId, r.id));
@@ -123,7 +129,7 @@ export async function ingest({ mode = 'batch' } = {}) {
         await sleep(config.llm.batchPollSeconds * 1000);
       }
       if (res) {
-        const out = await applyAll(rows, new Map([...res].map(([k, v]) => [byCid.get(k), v])));
+        const out = await applyAll(rows, byPageId(rows, res));
         out.dates.forEach((d) => dates.add(d)); tally = out.tally;
         db.prepare(`UPDATE batches SET status='ended', ended_at=? WHERE id=?`).run(now(), batchId);
       } else {

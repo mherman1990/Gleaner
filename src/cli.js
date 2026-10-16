@@ -13,7 +13,7 @@ import { db, setItemStatus } from './db.js';
 import { source } from './adapters/index.js';
 import { ingest } from './pipeline/ingest.js';
 import { morningDigest, reminderSweep, weeklyReview } from './digest/digest.js';
-import { renderOpenLoops, writeOpenLoops } from './output/markdown.js';
+import { renderOpenLoops, refreshItemOutputs } from './output/markdown.js';
 
 const [cmd, ...args] = process.argv.slice(2);
 const flag = (f) => args.includes(f);
@@ -36,8 +36,9 @@ async function main() {
     case 'done': case 'drop': case 'snooze': {
       const item = db.prepare('SELECT id FROM items WHERE code=?').get(Number(args[0]));
       if (!item) throw new Error(`no item #${args[0]}`);
+      if (cmd === 'snooze' && !/^\d{4}-\d{2}-\d{2}$/.test(args[1] || '')) throw new Error('usage: snooze N YYYY-MM-DD');
       setItemStatus(item.id, cmd === 'done' ? 'done' : cmd === 'drop' ? 'dropped' : 'snoozed', 'cli', null, cmd === 'snooze' ? args[1] : null);
-      writeOpenLoops();
+      refreshItemOutputs([item.id]);
       console.log(`#${args[0]} → ${cmd}`);
       break;
     }

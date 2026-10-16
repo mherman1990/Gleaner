@@ -18,7 +18,10 @@ ink is fingerprinted, so a page is only re-transcribed when it actually changes.
 
 ## Setup on Umbrel
 
-1. **Build and push the image** (arm64 for the Pi):
+1. **Publish the image** (arm64 for the Pi, plus amd64): push a tag, e.g. `git tag v0.1.0 && git push origin v0.1.0`.
+   The *Image* GitHub Actions workflow builds both architectures and pushes `ghcr.io/mherman1990/gleaner:0.1.0`;
+   its run summary prints the digest. The first time, open the package on GitHub (Packages → gleaner → settings) and make it
+   public if it isn't, so Umbrel can pull without credentials. To build by hand instead:
    `docker buildx build --platform linux/arm64,linux/amd64 -t ghcr.io/<you>/gleaner:0.1.0 --push .`
 2. **Add to your community app store** (same repo as Spotter): copy `umbrel/` to `<store-id>-gleaner/`, replace every
    `CHANGE-ME`, and pin the image by digest. Install it from the Umbrel UI.
@@ -66,6 +69,13 @@ On the tablet, create a `/Daily` folder and keep daily notebooks in it. See `doc
 
 ## Development
 
-`npm install`, then
-`GLEANER_SOURCE=fixture GLEANER_LLM=mock GLEANER_DATA_DIR=./.testdata GLEANER_FIXTURE_DIR=./fixtures node src/cli.js ingest`.
-Fixture layout is `fixtures/<Notebook>/<NN>.rm`. Mock mode runs the whole pipeline with no API key.
+Node 22, plus the renderer on `PATH`: `pip install rmc==0.3.0 rmscene==0.6.1 cairosvg==2.7.1` (cairosvg needs the
+system `libcairo2`). Then:
+
+- `npm ci && npm test` runs the test suite: ledger semantics against canned model output, the rmapi adapter against
+  a fake `rmapi` that mimics v0.0.35's real output, and the whole pipeline plus the HTTP API end to end. Without the
+  renderer installed, the end-to-end tests are skipped. CI runs the same suite and builds the image on every PR.
+- `npm run test:fixture` runs one ingest and digest into `./.testdata` so you can read the markdown it produces.
+
+Fixture layout is `fixtures/<Notebook>/<NN>.rm` (sample pages from the rmc project; see `fixtures/README.md`).
+Mock mode (`GLEANER_LLM=mock`) runs the whole pipeline with no API key.

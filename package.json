@@ -9,7 +9,8 @@
     "start": "node src/index.js",
     "ingest": "node src/cli.js ingest",
     "doctor": "node src/cli.js doctor",
-    "test:fixture": "GLEANER_SOURCE=fixture GLEANER_LLM=mock GLEANER_DATA_DIR=./.testdata node src/cli.js ingest && GLEANER_SOURCE=fixture GLEANER_LLM=mock GLEANER_DATA_DIR=./.testdata node src/cli.js digest"
+    "test": "node --test test/*.test.js",
+    "test:fixture": "GLEANER_SOURCE=fixture GLEANER_LLM=mock GLEANER_DATA_DIR=./.testdata GLEANER_FIXTURE_DIR=./fixtures node src/cli.js ingest && GLEANER_SOURCE=fixture GLEANER_LLM=mock GLEANER_DATA_DIR=./.testdata GLEANER_FIXTURE_DIR=./fixtures node src/cli.js digest"
   },
   "engines": { "node": ">=20" },
   "dependencies": {

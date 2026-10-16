@@ -1,0 +1,132 @@
+// Ledger semantics against canned record_page results. Dedupe runs in mock mode (exact text match).
+import { test, beforeEach } from 'node:test';
+import assert from 'node:assert/strict';
+import { tempEnv } from './helpers.js';
+
+tempEnv('ledger');
+const { db, openItems } = await import('../src/db.js');
+const { applyPageResult } = await import('../src/pipeline/ledger.js');
+
+let n = 0;
+function page(docId = 'doc1') {
+  const id = `pg${++n}`;
+  db.prepare('INSERT OR IGNORE INTO documents (id, name) VALUES (?, ?)').run(docId, docId);
+  db.prepare(`INSERT INTO pages (id, doc_id, page_index, rm_hash, status) VALUES (?,?,?,?, 'rendered')`).run(id, docId, n, `hash${n}`);
+  return db.prepare('SELECT * FROM pages WHERE id=?').get(id);
+}
+const item = (text, extra = {}) => ({ text, kind: 'action', status: 'open', person: null, due: null, priority: false, tags: [], ...extra });
+const result = (items, extra = {}) => ({
+  page_date: '2026-10-14', summary: 'notes', tags: [], transcription_md: 'md', legibility: 'high',
+  uncertain_spans: [], items, closes: [], ...extra,
+});
+const apply = (p, r) => applyPageResult(p, r, '2026-10-01');
+const items = () => db.prepare('SELECT * FROM items ORDER BY code').all();
+const byCode = (code) => db.prepare('SELECT * FROM items WHERE code=?').get(code);
+
+beforeEach(() => db.exec('DELETE FROM item_mentions; DELETE FROM items; DELETE FROM pages; DELETE FROM documents;'));
+
+test('new items get sequential codes, fields, and a mention', async () => {
+  const p = page();
+  const s = await apply(p, result([
+    item('Send Tom the 45Z comment draft', { kind: 'followup', person: 'Tom', priority: true, due: '2026-10-17', tags: ['45Z'] }),
+    item('Call RMA about prevented planting', { due: 'Friday' }),
+  ]));
+  assert.equal(s.created, 2);
+  const [a, b] = items();
+  assert.deepEqual([a.code, b.code], [1, 2]);
+  assert.equal(a.person, 'Tom');
+  assert.equal(a.priority, 1);
+  assert.equal(a.due, '2026-10-17');
+  assert.equal(a.kind, 'followup');
+  assert.equal(b.due, null, 'non-ISO due dates are discarded');
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM item_mentions WHERE page_id=?').get(p.id).n, 2);
+  const row = db.prepare('SELECT * FROM pages WHERE id=?').get(p.id);
+  assert.equal(row.status, 'transcribed');
+  assert.equal(row.transcribed_hash, row.rm_hash);
+  assert.equal(row.page_date, '2026-10-14');
+});
+
+test('re-transcribing a page with existing_item_id updates in place', async () => {
+  const p = page();
+  await apply(p, result([item('Send Tom the draft')]));
+  const id = items()[0].id;
+  await apply(p, result([item('Send Tom the 45Z comment draft', { existing_item_id: id, due: '2026-10-20' })]));
+  const all = items();
+  assert.equal(all.length, 1);
+  assert.equal(all[0].code, 1);
+  assert.equal(all[0].text, 'Send Tom the 45Z comment draft');
+  assert.equal(all[0].due, '2026-10-20');
+});
+
+test('re-extraction without existing_item_id keeps its number instead of being dropped as erased', async () => {
+  const p = page();
+  await apply(p, result([item('Draft SRE comment letter')]));
+  await apply(p, result([item('Draft SRE comment letter')])); // model forgot to link it
+  const all = items();
+  assert.equal(all.length, 1);
+  assert.equal(all[0].code, 1);
+  assert.equal(all[0].status, 'open');
+});
+
+test('an item erased from its only page is dropped; one also written elsewhere stays open', async () => {
+  const p1 = page(), p2 = page();
+  await apply(p1, result([item('Erased thing'), item('Carried thing')]));
+  await apply(p2, result([item('Carried thing')], { page_date: '2026-10-15' }));
+  const s = await apply(p1, result([]));
+  assert.equal(byCode(1).status, 'dropped');
+  assert.equal(byCode(1).closed_by, 'erased');
+  assert.equal(byCode(2).status, 'open');
+  assert.ok(s.itemIds.includes(byCode(1).id));
+});
+
+test('carry-forward across days bumps carry_days instead of duplicating', async () => {
+  await apply(page(), result([item('Call Brazil desk at USDA FAS')], { page_date: '2026-10-13' }));
+  const s = await apply(page(), result([item('Call Brazil desk at USDA FAS')], { page_date: '2026-10-15' }));
+  assert.equal(s.carried, 1);
+  assert.equal(s.created, 0);
+  const [it] = items();
+  assert.equal(items().length, 1);
+  assert.equal(it.carry_days, 2);
+  assert.equal(it.first_seen, '2026-10-13');
+  assert.equal(it.last_seen, '2026-10-15');
+});
+
+test('number closes: done, dropped, snooze — and closed items stay closed', async () => {
+  await apply(page(), result([item('One'), item('Two'), item('Three'), item('Four')]));
+  const s = await apply(page(), result([], {
+    closes: [
+      { code: 1, action: 'done', evidence: '✓1' },
+      { code: 2, action: 'dropped', evidence: 'x2' },
+      { code: 3, action: 'snooze', snooze_until: '2999-01-01', evidence: '3 → later' },
+      { code: 4, action: 'snooze', snooze_until: '2000-01-01', evidence: '4 → past' },
+      { code: 99, action: 'done', evidence: '✓99' },
+    ],
+  }));
+  assert.equal(s.closed, 2);
+  assert.equal(byCode(1).status, 'done');
+  assert.equal(byCode(1).close_evidence, '✓1');
+  assert.equal(byCode(2).status, 'dropped');
+  assert.equal(byCode(3).status, 'snoozed');
+  assert.deepEqual(openItems().map((i) => i.code), [4], 'snoozed items return once the date passes');
+
+  await apply(page(), result([], { closes: [{ code: 1, action: 'dropped', evidence: 'x1' }] }));
+  assert.equal(byCode(1).status, 'done');
+});
+
+test('a checked box on the page creates an already-closed item', async () => {
+  await apply(page(), result([item('Book hotel for Commodity Classic', { status: 'done' })]));
+  assert.equal(byCode(1).status, 'done');
+  assert.equal(byCode(1).closed_by, 'handwriting');
+});
+
+test('no written date falls back to the notebook date; a changed date reports the old one', async () => {
+  const p = page();
+  const first = await apply(p, result([item('Undated thing')], { page_date: null }));
+  assert.equal(first.pageDate, '2026-10-01');
+  assert.equal(byCode(1).first_seen, '2026-10-01');
+  const second = await apply(p, result([item('Undated thing', { existing_item_id: byCode(1).id })], { page_date: '2026-10-14' }));
+  assert.equal(second.pageDate, '2026-10-14');
+  assert.equal(second.prevDate, '2026-10-01');
+  assert.deepEqual(db.prepare('SELECT page_date FROM item_mentions').all(), [{ page_date: '2026-10-14' }]);
+  assert.equal(byCode(1).carry_days, 1);
+});
