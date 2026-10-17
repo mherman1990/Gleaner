@@ -1,0 +1,59 @@
+manifestVersion: 1
+id: herman-gleaner
+name: Gleaner
+tagline: Handwritten reMarkable notes become an open-loop task list
+icon: https://raw.githubusercontent.com/mherman1990/spotter-umbrel-store/main/herman-gleaner/icon.svg
+category: productivity
+version: "0.1.0"
+port: 3717
+description: >-
+  Gleaner reads the notebooks in one folder of your reMarkable (/Daily by
+  default), transcribes each changed page with Claude, and keeps a ledger of
+  the commitments you wrote down. Notes are saved as dated markdown in this
+  app's data folder on your Umbrel. The outside services are the reMarkable
+  cloud (through rmapi, which needs Connect) and the Anthropic API, using a
+  key you add to gleaner.env.
+
+
+  Features:
+
+  - Only changed pages are transcribed, and the nightly run uses the Batch
+  API at half price
+
+  - Every open item gets a number; write ✓14, x14 or 14 → Fri on the tablet
+  to close, drop or snooze it
+
+  - An item you rewrite on a later day is linked to the original, and the
+  days you've carried it are counted
+
+  - A Today sheet PDF lands on the tablet each weekday morning
+
+  - Due and overdue nudges to Teams or ntfy, plus a Sunday weekly review
+
+  - A token-protected API for Claude and scripts: open items, notes by date,
+  search
+
+
+  Setup after install: put ANTHROPIC_API_KEY and GLEANER_API_TOKEN in
+  gleaner.env in the app's data folder, then register rmapi once with a
+  code from your reMarkable account. The README has the steps.
+developer: Matt Herman
+website: https://github.com/mherman1990/Gleaner
+repo: https://github.com/mherman1990/Gleaner
+support: https://github.com/mherman1990/Gleaner/issues
+gallery: []
+path: ""
+dependencies: []
+defaultUsername: ""
+defaultPassword: ""
+storage:
+  dataRoot: data
+# Pulled notebooks and page renders are re-created on the next ingest.
+backupIgnore:
+  - data/raw/*
+  - data/renders/*
+releaseNotes: >-
+  First release: transcription, the open-loop ledger, the Today sheet,
+  reminders, the weekly review, and the API.
+submitter: Matt Herman
+submission: https://github.com/mherman1990/Gleaner

@@ -56,7 +56,7 @@ const defaults = {
     tabletTodayFolder: '/Daily',
     tabletTodayName: '_Today',
   },
-  server: { port: 3717, apiToken: '' }, // when set, write endpoints require Bearer token
+  server: { port: 3717, apiToken: '' }, // /api requires this Bearer token and is disabled while it's empty
   tags: [
     // Seed vocabulary — edit in /data/config.json. The model maps circled words / #tags onto these.
     '45Z', 'RFS', 'SRE', 'CoverCress', 'PULA', 'FIFRA', 'farm-bill', 'China-trade', 'Brazil',

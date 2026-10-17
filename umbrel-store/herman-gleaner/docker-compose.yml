@@ -1,0 +1,24 @@
+version: "3.7"
+
+services:
+  app_proxy:
+    environment:
+      # Format: <app-id>_<service-name>_1
+      APP_HOST: herman-gleaner_web_1
+      APP_PORT: 3717
+      # Umbrel login stays on for the browser UI. /api/* is for machines (Claude, scripts),
+      # so it skips Umbrel login and Gleaner requires GLEANER_API_TOKEN there instead.
+      PROXY_AUTH_WHITELIST: "/api/*"
+
+  web:
+    # The release workflow fills in the image digest (scripts/bump-store.mjs).
+    image: ghcr.io/mherman1990/gleaner:0.1.0@sha256:e6a2164b2915a4fa052ecddec693139aed10a9d363994dbb40d315c9232e57f3
+    user: "1000:1000"
+    init: true
+    restart: on-failure
+    stop_grace_period: 1m
+    environment:
+      TZ: America/Chicago
+      GLEANER_DATA_DIR: /data
+    volumes:
+      - ${APP_DATA_DIR}/data:/data

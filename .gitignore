@@ -1,4 +1,4 @@
 node_modules/
-.testdata/
-data/
+/.testdata/
+/data/
 *.log

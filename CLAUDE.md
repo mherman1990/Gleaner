@@ -27,6 +27,13 @@ Read README.md for setup and docs/HANDWRITING.md for the notation the extractor 
   published at least two weeks ago.
 - Config is defaults ← `/data/config.json` ← env, with secrets in `/data/gleaner.env`. Never commit secrets, `data/`, or `.testdata/`.
 - Dates are local (`localDate()` in `src/config.js`, America/Chicago), never UTC slices.
+- **Umbrel packaging:** Gleaner is `herman-gleaner` in the Herman Apps store (`mherman1990/spotter-umbrel-store`, shared
+  with Spotter). Its listing lives here in `umbrel-store/herman-gleaner/`; the Release workflow (tag `vX.Y.Z` matching
+  `package.json`) builds the image, syncs only that folder into the store, and pins the digest. The store's `README.md`
+  and `umbrel-app-store.yml` belong to the spotter repo; never sync them from here. Spotter's release runs
+  `check-store.mjs` over every app folder, so `herman-gleaner/` must keep passing it (`test/store.test.js` enforces this;
+  `scripts/check-store.mjs` is a verbatim copy of Spotter's). `/api/*` skips Umbrel login, so it stays disabled
+  without `GLEANER_API_TOKEN`.
 - Tests: `npm test` (node:test, mock LLM, temp data dirs). The end-to-end tests need `rmc` and `cairosvg` on PATH
   and skip without them. Run it before every push; CI runs it plus an image build on each PR.
 - Offline test loop: `GLEANER_SOURCE=fixture GLEANER_LLM=mock GLEANER_DATA_DIR=./.testdata GLEANER_FIXTURE_DIR=./fixtures node src/cli.js ingest`.
@@ -71,9 +78,10 @@ Not yet verified, in priority order:
    - Check that the extraction isn't noisy: tune `NOTATION` and the rules in `src/llm/prompts.js` against Matt's actual pages.
    - Check prompt caching hits in `/api/status` (`cache_read` > 0 on the second page of a run).
 3. **On the Pi itself.** Check render time per page and memory use during a batch.
-4. **Umbrel install.** Use the app id and store prefix from his existing community app store (the same repo pattern as Spotter).
-   Confirm that `PROXY_AUTH_WHITELIST` lets nested paths like `/api/items/14` through while the UI stays behind Umbrel login.
-   Other store apps (e.g. Bazarr) rely on `"/api/*"` for nested APIs, so this should hold.
+4. **Umbrel install.** The listing passes Spotter's store checks, and `v0.1.0` is in the store, but nobody has installed it
+   on the Pi yet. Confirm that `PROXY_AUTH_WHITELIST` lets nested paths like `/api/items/14` through while the UI stays
+   behind Umbrel login. Other store apps (e.g. Bazarr) rely on `"/api/*"` for nested APIs, so this should hold.
+   The first automated store sync (the next release after `STORE_REPO` / `STORE_REPO_TOKEN` are set) is also untested.
 
 ## Backlog (not v0.1)
 - Read annotations on the `_Today` PDF by compositing strokes over the rendered PDF page, so ticks on the sheet close items.
