@@ -8,11 +8,12 @@ import { tempEnv, copyFixtures, rendererMissing } from './helpers.js';
 
 const fx = copyFixtures();
 const dataDir = tempEnv('pipeline', { GLEANER_FIXTURE_DIR: fx, GLEANER_API_TOKEN: 'test-token', GLEANER_PORT: '0' });
+fs.writeFileSync(path.join(dataDir, 'config.json'), JSON.stringify({ notebooks: { taskLists: ['calls'] } }));
 const skip = rendererMissing;
 
 const { localDate, config } = await import('../src/config.js');
 const { db } = await import('../src/db.js');
-const { ingest } = await import('../src/pipeline/ingest.js');
+const { ingest, markForRetranscription } = await import('../src/pipeline/ingest.js');
 const { morningDigest, reminderSweep, weeklyReview } = await import('../src/digest/digest.js');
 const { startServer } = await import('../src/server.js');
 const { exclusive, busy } = await import('../src/jobs.js');
@@ -46,6 +47,38 @@ test('an edited page is re-transcribed alone, without duplicate items', { skip }
   assert.equal(r.pages, 1);
   assert.equal(r.created, 0);
   assert.equal(count('SELECT COUNT(*) AS n FROM items'), 5);
+});
+
+test('only task-list notebooks are flagged to the model', { skip }, () => {
+  const summaries = db.prepare(`SELECT d.name, p.summary FROM pages p JOIN documents d ON d.id=p.doc_id`).all();
+  for (const { name, summary } of summaries) {
+    assert.equal(summary.endsWith('(task list)'), name === 'Calls', `${name}: ${summary}`);
+  }
+});
+
+test('retranscribe re-reads by notebook, date, or all, keeping item numbers', { skip }, async () => {
+  const codes = () => db.prepare('SELECT code FROM items ORDER BY code').all().map((r) => r.code);
+  const before = codes();
+  assert.equal(markForRetranscription('nonexistent notebook'), 0);
+
+  assert.equal(markForRetranscription('CALLS'), 1);
+  let r = await ingest({ mode: 'sync' });
+  assert.equal(r.pages, 1);
+  assert.equal(r.created, 0);
+
+  assert.equal(markForRetranscription(today), 4);
+  r = await ingest({ mode: 'sync' });
+  assert.equal(r.pages, 4);
+  assert.equal(r.failed, 0);
+
+  fs.rmSync(path.join(dataDir, 'renders'), { recursive: true, force: true }); // renders aren't backed up
+  fs.mkdirSync(path.join(dataDir, 'renders'));
+  assert.equal(markForRetranscription('all'), 4);
+  r = await ingest({ mode: 'sync' });
+  assert.equal(r.rendered, 4, 'missing renders are re-created');
+  assert.equal(r.pages, 4);
+  assert.deepEqual(codes(), before, 'no duplicates, no renumbering');
+  assert.equal((await ingest({ mode: 'sync' })).pages, 0, 'nothing left to re-read');
 });
 
 test('digest writes markdown and pushes the Today PDF', { skip }, async () => {

@@ -11,12 +11,13 @@ export function mockFor(params, purpose) {
 
   if (purpose === 'transcribe') {
     const nb = text.match(/Notebook: "([^"]+)", page (\d+)/);
+    const taskList = /TASK LIST/.test(text);
     const closes = [...text.matchAll(/✓(\d+)/g)].map((m) => ({ code: Number(m[1]), action: 'done', snooze_until: null, evidence: m[0] }));
     const prior = new Map([...text.matchAll(/id=(\S+): (.+) \[\w+\]$/gm)].map((m) => [m[2], m[1]]));
     const ex = (t) => prior.get(t) || null;
     return {
       page_date: localDate(),
-      summary: `Mock notes from ${nb?.[1]} p${nb?.[2]}`,
+      summary: `Mock notes from ${nb?.[1]} p${nb?.[2]}${taskList ? ' (task list)' : ''}`,
       tags: ['45Z'],
       transcription_md: `## Mock transcription\n- notebook ${nb?.[1]}, page ${nb?.[2]}\n- ☐ Send Tom the 45Z comment draft`,
       legibility: 'high',

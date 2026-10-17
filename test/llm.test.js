@@ -9,6 +9,7 @@ tempEnv('llm');
 const { structuredParams, structuredOutput } = await import('../src/llm/client.js');
 const { RECORD_PAGE_SCHEMA, MATCH_SCHEMA, DAILY_SCHEMA, transcribeUser } = await import('../src/llm/prompts.js');
 const { mockFor } = await import('../src/llm/mock.js');
+const { isTaskList } = await import('../src/config.js');
 
 const SCHEMAS = { RECORD_PAGE_SCHEMA, MATCH_SCHEMA, DAILY_SCHEMA };
 const UNSUPPORTED = ['minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf', 'minLength', 'maxLength',
@@ -85,6 +86,20 @@ test('structuredOutput explains refusals, truncation, and non-JSON instead of re
   assert.throws(() => structuredOutput({ stop_reason: 'refusal', stop_details: { category: 'cyber' }, content: [] }), /declined \(cyber\)/);
   assert.throws(() => structuredOutput({ stop_reason: 'max_tokens', content: [{ type: 'text', text: '{"mat' }] }), /max_tokens/);
   assert.throws(() => structuredOutput({ stop_reason: 'end_turn', content: [{ type: 'text', text: 'Sure! Here you go' }] }), /not JSON/);
+});
+
+test('task-list notebooks match by name, ignoring case and outer spaces', () => {
+  assert.equal(isTaskList('To do'), true);
+  assert.equal(isTaskList('  TO DO '), true);
+  assert.equal(isTaskList('Todo'), false);
+  assert.equal(isTaskList('Daily'), false);
+  assert.equal(isTaskList(undefined), false);
+});
+
+test('only task-list pages tell the model every line is a to-do', () => {
+  const text = (taskList) => transcribeUser({ docName: 'To do', pageIndex: 0, dateHint: '2026-10-17', typedText: '', priorItems: [], imageB64: '', taskList })[1].text;
+  assert.match(text(true), /TASK LIST/);
+  assert.doesNotMatch(text(false), /TASK LIST/);
 });
 
 test('the mock returns what the schemas describe', () => {

@@ -56,6 +56,11 @@ const defaults = {
     tabletTodayFolder: '/Daily',
     tabletTodayName: '_Today',
   },
+  notebooks: {
+    // Notebooks where every written line is a to-do, marked or not. Matched by name, ignoring case.
+    // Every other notebook needs the notation (☐, →, !, dates…) for a line to become an item.
+    taskLists: ['To do'],
+  },
   server: { port: 3717, apiToken: '' }, // /api requires this Bearer token and is disabled while it's empty
   tags: [
     // Seed vocabulary — edit in /data/config.json. The model maps circled words / #tags onto these.
@@ -117,6 +122,12 @@ export const paths = {
   secrets: path.join(config.dataDir, 'secrets'),
 };
 for (const [k, p] of Object.entries(paths)) if (k !== 'db') fs.mkdirSync(p, { recursive: true });
+
+/** Whether a notebook is listed in notebooks.taskLists (every line is a to-do). Case and outer spaces don't matter. */
+export function isTaskList(notebookName) {
+  const name = String(notebookName ?? '').trim().toLowerCase();
+  return config.notebooks.taskLists.some((t) => String(t).trim().toLowerCase() === name);
+}
 
 /** Today's date (YYYY-MM-DD) in the configured timezone, not UTC. */
 export function localDate(d = new Date()) {

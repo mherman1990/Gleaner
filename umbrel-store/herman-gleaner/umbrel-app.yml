@@ -4,7 +4,7 @@ name: Gleaner
 tagline: Handwritten reMarkable notes become an open-loop task list
 icon: https://raw.githubusercontent.com/mherman1990/spotter-umbrel-store/main/herman-gleaner/icon.svg
 category: productivity
-version: "0.1.1"
+version: "0.1.2"
 port: 3717
 description: >-
   Gleaner reads the notebooks in one folder of your reMarkable (/Daily by
@@ -53,8 +53,9 @@ backupIgnore:
   - data/raw/*
   - data/renders/*
 releaseNotes: >-
-  Fixes transcription on Claude Sonnet 5.5: 0.1.0 asked the model for a
-  forced tool call, which the 5.5 models reject, so every page failed.
-  Pages that failed are transcribed on the next run.
+  Task-list notebooks: in the notebook named "To do" (or any notebook you
+  list under notebooks.taskLists), every line you write becomes a to-do,
+  no checkbox needed. New retranscribe command re-reads pages after you
+  change the model or settings, keeping item numbers.
 submitter: Matt Herman
 submission: https://github.com/mherman1990/Gleaner

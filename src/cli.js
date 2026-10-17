@@ -6,12 +6,13 @@
 //   remind            run the reminder sweep once
 //   weekly [--push]   build the weekly review
 //   items             print open loops
+//   retranscribe all | YYYY-MM-DD | "<notebook>"   read those pages again now (after a prompt/model change)
 //   done <code> | drop <code> | snooze <code> <YYYY-MM-DD>
 import { execFileSync } from 'node:child_process';
 import { config } from './config.js';
 import { db, setItemStatus } from './db.js';
 import { source } from './adapters/index.js';
-import { ingest } from './pipeline/ingest.js';
+import { ingest, markForRetranscription } from './pipeline/ingest.js';
 import { morningDigest, reminderSweep, weeklyReview } from './digest/digest.js';
 import { renderOpenLoops, refreshItemOutputs } from './output/markdown.js';
 
@@ -21,7 +22,7 @@ const flag = (f) => args.includes(f);
 async function main() {
   switch (cmd) {
     case 'doctor': {
-      const out = { config: { source: config.source.adapter, folder: config.source.folder, llm: config.llm.mode, models: { t: config.llm.transcribeModel, d: config.llm.digestModel, w: config.llm.weeklyModel, h: config.llm.triageModel } } };
+      const out = { config: { source: config.source.adapter, folder: config.source.folder, llm: config.llm.mode, models: { t: config.llm.transcribeModel, d: config.llm.digestModel, w: config.llm.weeklyModel, h: config.llm.triageModel }, taskLists: config.notebooks.taskLists } };
       try { out.rmc = execFileSync('rmc', ['--version']).toString().trim(); } catch (e) { out.rmc = `missing: ${e.message}`; }
       out.apiKey = !!process.env.ANTHROPIC_API_KEY;
       out.source = await source().doctor().catch((e) => ({ error: e.message }));
@@ -33,6 +34,13 @@ async function main() {
     case 'remind': console.log(await reminderSweep()); break;
     case 'weekly': console.log((await weeklyReview({ push: flag('--push') })).md); break;
     case 'items': console.log(renderOpenLoops()); break;
+    case 'retranscribe': {
+      if (!args[0]) throw new Error('usage: retranscribe all | YYYY-MM-DD | "<notebook name>"');
+      const n = markForRetranscription(args[0]);
+      console.log(`${n} page(s) to read again`);
+      if (n) console.log(await ingest({ mode: 'sync' }));
+      break;
+    }
     case 'done': case 'drop': case 'snooze': {
       const item = db.prepare('SELECT id FROM items WHERE code=?').get(Number(args[0]));
       if (!item) throw new Error(`no item #${args[0]}`);
@@ -43,7 +51,7 @@ async function main() {
       break;
     }
     default:
-      console.log('usage: gleaner doctor | ingest [--sync] | digest [--push] | remind | weekly [--push] | items | done N | drop N | snooze N YYYY-MM-DD');
+      console.log('usage: gleaner doctor | ingest [--sync] | digest [--push] | remind | weekly [--push] | items | retranscribe all|YYYY-MM-DD|"<notebook>" | done N | drop N | snooze N YYYY-MM-DD');
   }
 }
 main().then(() => process.exit(0)).catch((e) => { console.error(e.message); process.exit(1); });
