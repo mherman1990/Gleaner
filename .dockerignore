@@ -5,6 +5,7 @@ data
 .github
 docs
 cowork
-umbrel
+umbrel-store
+scripts
 fixtures
 test

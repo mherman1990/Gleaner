@@ -10,7 +10,7 @@ const fx = copyFixtures();
 const dataDir = tempEnv('pipeline', { GLEANER_FIXTURE_DIR: fx, GLEANER_API_TOKEN: 'test-token', GLEANER_PORT: '0' });
 const skip = rendererMissing;
 
-const { localDate } = await import('../src/config.js');
+const { localDate, config } = await import('../src/config.js');
 const { db } = await import('../src/db.js');
 const { ingest } = await import('../src/pipeline/ingest.js');
 const { morningDigest, reminderSweep, weeklyReview } = await import('../src/digest/digest.js');
@@ -91,6 +91,9 @@ test('HTTP API: token, items, status changes, notes', { skip }, async (t) => {
   assert.equal((await get('/health', {})).status, 200);
   assert.equal((await get('/api/items', {})).status, 401);
   assert.equal((await get('/api/items', { Authorization: 'Bearer wrong' })).status, 401);
+  config.server.apiToken = '';
+  assert.equal((await get('/api/items')).status, 503, 'without a token /api is closed, not open');
+  config.server.apiToken = 'test-token';
 
   const items = await (await get('/api/items')).json();
   assert.equal(items.length, 5);

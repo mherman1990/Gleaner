@@ -1,8 +1,9 @@
 // Two mounts of the same router:
-//   /api/*     — for machines (Claude via Desktop Commander, scripts). Requires Bearer token when configured.
-//                Whitelisted past Umbrel's proxy auth in umbrel/docker-compose.yml.
+//   /api/*     — for machines (Claude via Desktop Commander, scripts). Requires the Bearer token; disabled without one.
+//                Whitelisted past Umbrel's proxy auth in umbrel-store/herman-gleaner/docker-compose.yml.
 //   /ui/api/*  — for the browser UI; sits behind Umbrel's own login via app_proxy.
 import express from 'express';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -99,10 +100,13 @@ function router() {
   return r;
 }
 
+// /api skips Umbrel's login (PROXY_AUTH_WHITELIST), so without a token it stays closed rather than open.
 function requireToken(req, res, next) {
   const t = config.server.apiToken;
-  if (!t) return next();
-  if ((req.headers.authorization || '') === `Bearer ${t}`) return next();
+  if (!t) return res.status(503).json({ error: 'GLEANER_API_TOKEN is not set; /api is disabled until it is' });
+  const given = Buffer.from(req.headers.authorization || '');
+  const want = Buffer.from(`Bearer ${t}`);
+  if (given.length === want.length && crypto.timingSafeEqual(given, want)) return next();
   res.status(401).json({ error: 'unauthorized' });
 }
 
@@ -113,6 +117,6 @@ export function startServer() {
   app.use('/ui/api', router());
   app.use(express.static(PUBLIC));
   const server = app.listen(config.server.port, () => console.log(`[server] listening on :${server.address().port}`));
-  if (!config.server.apiToken) console.warn('[server] GLEANER_API_TOKEN not set — /api is open to anything that can reach this port');
+  if (!config.server.apiToken) console.warn('[server] GLEANER_API_TOKEN not set — /api is disabled; the browser UI still works');
   return server;
 }
