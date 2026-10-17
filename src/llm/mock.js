@@ -1,16 +1,17 @@
-// Deterministic stand-ins for each tool so the pipeline runs end-to-end without an API key.
+// Deterministic stand-ins for each structured call so the pipeline runs end to end without an API key.
+// Outputs match the schemas in prompts.js (test/llm.test.js checks it).
 import { localDate } from '../config.js';
 
 const userText = (params) =>
   params.messages[0].content.filter?.((b) => b.type === 'text').map((b) => b.text).join('\n') ?? String(params.messages[0].content);
 
-export function mockFor(params) {
-  const tool = params.tool_choice?.name;
+/** purpose: transcribe | dedupe | digest (as passed to callStructured / collectBatch). */
+export function mockFor(params, purpose) {
   const text = userText(params);
 
-  if (tool === 'record_page') {
+  if (purpose === 'transcribe') {
     const nb = text.match(/Notebook: "([^"]+)", page (\d+)/);
-    const closes = [...text.matchAll(/✓(\d+)/g)].map((m) => ({ code: Number(m[1]), action: 'done', evidence: m[0] }));
+    const closes = [...text.matchAll(/✓(\d+)/g)].map((m) => ({ code: Number(m[1]), action: 'done', snooze_until: null, evidence: m[0] }));
     const prior = new Map([...text.matchAll(/id=(\S+): (.+) \[\w+\]$/gm)].map((m) => [m[2], m[1]]));
     const ex = (t) => prior.get(t) || null;
     return {
@@ -27,14 +28,14 @@ export function mockFor(params) {
       closes,
     };
   }
-  if (tool === 'match_items') {
+  if (purpose === 'dedupe') {
     const news = [...text.matchAll(/^NEW (\S+): (.+)$/gm)].map((m) => ({ ref: m[1], t: m[2].trim() }));
     const olds = [...text.matchAll(/^OPEN (\d+): (.+)$/gm)].map((m) => ({ code: Number(m[1]), t: m[2].trim() }));
     return { matches: news.flatMap((n) => olds.filter((o) => o.t === n.t).slice(0, 1).map((o) => ({ new_ref: n.ref, code: o.code }))) };
   }
-  if (tool === 'daily_plan') {
+  if (purpose === 'digest') {
     const codes = [...text.matchAll(/^#(\d+)/gm)].map((m) => Number(m[1])).slice(0, 3);
     return { headline: 'Mock plan: clear the follow-ups first.', top3: codes.map((c) => ({ code: c, why: 'mock' })), carrying_callout: null, drop_candidates: [] };
   }
-  throw new Error(`mock: no handler for tool ${tool}`);
+  throw new Error(`mock: no handler for ${purpose}`);
 }

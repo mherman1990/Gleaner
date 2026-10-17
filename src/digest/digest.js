@@ -2,8 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { config, paths, localDate, localWeekday } from '../config.js';
 import { db, now, openItems, startRun, endRun, P } from '../db.js';
-import { callTool, callText, toolParams } from '../llm/client.js';
-import { DAILY_SYSTEM, DAILY_TOOL, WEEKLY_SYSTEM } from '../llm/prompts.js';
+import { callStructured, callText, structuredParams } from '../llm/client.js';
+import { DAILY_SYSTEM, DAILY_SCHEMA, WEEKLY_SYSTEM } from '../llm/prompts.js';
 import { itemLine } from '../output/markdown.js';
 import { buildTodaySheet } from './todaySheet.js';
 import { notify, pushToTablet } from '../notify/index.js';
@@ -39,10 +39,10 @@ export async function morningDigest({ push = true } = {}) {
     if (b.items.length) {
       const content = `Today is ${localWeekday()} ${today}.\n\nOPEN LEDGER (${b.items.length}):\n${b.items.map(ledgerLine).join('\n')}\n\n` +
         `RECENT PAGES:\n${recent.map((r) => `${r.page_date} ${r.name}: ${r.summary}`).join('\n') || 'none'}`;
-      plan = await callTool(toolParams({ model: config.llm.digestModel, systemBlocks: [DAILY_SYSTEM], content, tool: DAILY_TOOL, maxTokens: 1200 }), 'digest');
+      plan = await callStructured(structuredParams({ model: config.llm.digestModel, systemBlocks: [DAILY_SYSTEM], content, schema: DAILY_SCHEMA }), 'digest');
     }
     const byCode = new Map(b.items.map((i) => [i.code, i]));
-    const top = (plan.top3 || []).filter((t) => byCode.has(t.code)).map((t) => ({ ...byCode.get(t.code), why: t.why }));
+    const top = (plan.top3 || []).filter((t) => byCode.has(t.code)).slice(0, 3).map((t) => ({ ...byCode.get(t.code), why: t.why }));
 
     const sec = (title, list, extra) => (list.length ? [`## ${title}`, extra ? `_${extra}_` : null, ...list].filter(Boolean).join('\n') : null);
     const md = [
@@ -108,7 +108,7 @@ export async function weeklyReview({ push = true } = {}) {
     `\n\nCLOSED THIS WEEK:\n${closed.map((i) => `#${i.code} ${i.status} via ${i.closed_by}: ${i.text}`).join('\n') || 'none'}` +
     `\n\nSTILL OPEN:\n${b.items.map(ledgerLine).join('\n') || 'none'}` +
     `\n\nSTALE (no mention in ${config.reminders.staleDays}+ days): ${b.stale.map((i) => `#${i.code}`).join(', ') || 'none'}`;
-  const md = `# Weekly review — week ending ${today}\n\n` + await callText({ model: config.llm.weeklyModel, system: WEEKLY_SYSTEM, content, maxTokens: 1500 }, 'weekly');
+  const md = `# Weekly review — week ending ${today}\n\n` + await callText({ model: config.llm.weeklyModel, system: WEEKLY_SYSTEM, content }, 'weekly');
   fs.writeFileSync(path.join(paths.out, `weekly-${today}.md`), md);
   if (push) await notify({ title: `Weekly review ready (${closed.length} closed, ${b.items.length} open)`, body: md.slice(0, 1500), priority: 'default' });
   return { date: today, closed: closed.length, open: b.items.length, md };

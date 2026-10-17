@@ -4,8 +4,8 @@ import { db, now, sha256, startRun, endRun, openItems } from '../db.js';
 import { source } from '../adapters/index.js';
 import { renderPage } from './render.js';
 import { applyPageResult, priorItemsForPage } from './ledger.js';
-import { toolParams, callTool, submitBatch, collectBatch } from '../llm/client.js';
-import { transcribeSystem, openLoopsBlock, RECORD_PAGE_TOOL, transcribeUser } from '../llm/prompts.js';
+import { structuredParams, callStructured, submitBatch, collectBatch } from '../llm/client.js';
+import { transcribeSystem, openLoopsBlock, RECORD_PAGE_SCHEMA, transcribeUser } from '../llm/prompts.js';
 import { writeDayFiles, writeOpenLoops, mentionDates } from '../output/markdown.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -49,11 +49,10 @@ function pageContext(pageRow) {
 
 function buildParams(pageRow, loopsBlock) {
   const { doc, dateHint } = pageContext(pageRow);
-  return toolParams({
+  return structuredParams({
     model: config.llm.transcribeModel,
     systemBlocks: [transcribeSystem(), loopsBlock],
-    tool: RECORD_PAGE_TOOL,
-    maxTokens: 4096,
+    schema: RECORD_PAGE_SCHEMA,
     content: transcribeUser({
       docName: doc?.name || 'notebook', pageIndex: pageRow.page_index, dateHint,
       typedText: pageRow.typed_text, priorItems: priorItemsForPage(pageRow.id),
@@ -92,7 +91,7 @@ async function collectPending() {
   const pending = db.prepare(`SELECT * FROM batches WHERE status='in_progress'`).all();
   const dates = new Set();
   for (const b of pending) {
-    const res = await collectBatch(b.id, RECORD_PAGE_TOOL.name, 'transcribe');
+    const res = await collectBatch(b.id, 'transcribe');
     if (!res) continue;
     const rows = db.prepare(`SELECT * FROM pages WHERE batch_id=?`).all(b.id);
     const out = await applyAll(rows, byPageId(rows, res));
@@ -125,7 +124,7 @@ export async function ingest({ mode = 'batch' } = {}) {
 
       const deadline = Date.now() + config.llm.batchMaxWaitMinutes * 60000;
       let res = null;
-      while (Date.now() < deadline && !(res = await collectBatch(batchId, RECORD_PAGE_TOOL.name, 'transcribe'))) {
+      while (Date.now() < deadline && !(res = await collectBatch(batchId, 'transcribe'))) {
         await sleep(config.llm.batchPollSeconds * 1000);
       }
       if (res) {
@@ -138,7 +137,7 @@ export async function ingest({ mode = 'batch' } = {}) {
     } else if (rows.length) {
       const results = new Map();
       for (const r of rows) {
-        try { results.set(r.id, { ok: true, input: await callTool(buildParams(r, loops), 'transcribe') }); }
+        try { results.set(r.id, { ok: true, input: await callStructured(buildParams(r, loops), 'transcribe') }); }
         catch (e) { results.set(r.id, { ok: false, error: e.message }); }
       }
       const out = await applyAll(rows, results);

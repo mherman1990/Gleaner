@@ -27,7 +27,7 @@ App Store → ⋯ → Community App Stores.
    Set at least `ANTHROPIC_API_KEY` and `GLEANER_API_TOKEN` (without a token, `/api` stays disabled). A `config.json`
    is optional; see `config/config.example.json`. Restart the app.
 3. **Register rmapi with your reMarkable account** (one time). Get a code at
-   `https://my.remarkable.com/device/desktop/connect`, then:
+   `https://my.remarkable.com/device/browser/connect`, then:
    ```
    sudo docker exec -it herman-gleaner_web_1 sh -c 'RMAPI_CONFIG=/data/secrets/rmapi.conf rmapi'
    ```
