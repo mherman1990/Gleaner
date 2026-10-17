@@ -1,6 +1,17 @@
-// Prompts and tool schemas. Everything static lives in cached system blocks; per-run context
+// Prompts and response schemas. Everything static lives in cached system blocks; per-run context
 // (the open-loop list) is a second cached block shared by every page in a batch.
+//
+// The schemas go to output_config.format (structured outputs), which accepts a subset of JSON Schema:
+// every object needs additionalProperties: false; no min/max, minLength/maxLength, or maxItems constraints.
+// Every property is required, and a field that may be absent is nullable (anyOf with null) instead of
+// optional, so the shape the code reads never varies. test/llm.test.js checks these rules.
 import { config } from '../config.js';
+
+const nullable = (schema) => ({ anyOf: [schema, { type: 'null' }] });
+const DATE = { type: 'string', format: 'date' };
+const strings = { type: 'array', items: { type: 'string' } };
+/** An object schema in the strict form structured outputs needs: closed, every property required. */
+const object = (properties) => ({ type: 'object', properties, required: Object.keys(properties), additionalProperties: false });
 
 export const NOTATION = `
 HANDWRITING NOTATION (the writer uses these conventions; they are the main signal for items)
@@ -42,13 +53,15 @@ ITEM EXTRACTION RULES
   Fewer, accurate items beat many noisy ones.
 - Write item text as a short imperative a reader understands out of context:
   "Send Tom the 45Z comment draft" — not "draft".
-- person = the counterpart's name as written. due = YYYY-MM-DD or null. priority = true only with "!".
-- If an item matches one in "ITEMS PREVIOUSLY EXTRACTED FROM THIS PAGE", set existing_item_id so it is updated, not duplicated.
+- person = the counterpart's name as written, or null. due = YYYY-MM-DD or null. priority = true only with "!".
+- If an item matches one in "ITEMS PREVIOUSLY EXTRACTED FROM THIS PAGE", set existing_item_id to that id so it is
+  updated, not duplicated; otherwise null.
 - Use closes[] only for explicit number references ("✓14" etc.) or a checked box on a line matching an open item.
+  snooze_until is the YYYY-MM-DD date for a snooze and null otherwise.
 - tags: choose from this vocabulary when it fits; otherwise a short new kebab-case tag:
   ${config.tags.join(', ')}
 
-Always respond by calling record_page exactly once.`;
+Respond with the JSON object for this page.`;
 }
 
 export function openLoopsBlock(items) {
@@ -57,52 +70,37 @@ export function openLoopsBlock(items) {
   return `OPEN ITEMS (by number) — the writer may close or snooze these by number:\n${lines.join('\n')}`;
 }
 
-export const RECORD_PAGE_TOOL = {
-  name: 'record_page',
-  description: 'Record the transcription and extracted items for one handwritten page.',
-  input_schema: {
-    type: 'object',
-    properties: {
-      page_date: { type: ['string', 'null'], description: 'YYYY-MM-DD from the written date; null if none written.' },
-      summary: { type: 'string', description: 'One line, <= 20 words: what this page is about.' },
-      tags: { type: 'array', items: { type: 'string' } },
-      transcription_md: { type: 'string' },
-      legibility: { type: 'string', enum: ['high', 'medium', 'low'] },
-      uncertain_spans: { type: 'array', items: { type: 'string' } },
-      items: {
-        type: 'array',
-        items: {
-          type: 'object',
-          properties: {
-            existing_item_id: { type: ['string', 'null'] },
-            text: { type: 'string' },
-            kind: { type: 'string', enum: ['action', 'followup', 'waiting', 'decision', 'idea', 'question'] },
-            person: { type: ['string', 'null'] },
-            due: { type: ['string', 'null'] },
-            priority: { type: 'boolean' },
-            status: { type: 'string', enum: ['open', 'done', 'dropped'] },
-            tags: { type: 'array', items: { type: 'string' } },
-          },
-          required: ['text', 'kind', 'status'],
-        },
-      },
-      closes: {
-        type: 'array',
-        items: {
-          type: 'object',
-          properties: {
-            code: { type: 'integer' },
-            action: { type: 'string', enum: ['done', 'dropped', 'snooze'] },
-            snooze_until: { type: ['string', 'null'] },
-            evidence: { type: 'string', description: 'The exact mark/words on the page.' },
-          },
-          required: ['code', 'action', 'evidence'],
-        },
-      },
-    },
-    required: ['summary', 'transcription_md', 'legibility', 'items', 'closes', 'tags'],
+/** One handwritten page: its transcription and the items extracted from it. */
+export const RECORD_PAGE_SCHEMA = object({
+  page_date: { ...nullable(DATE), description: 'The date written on the page; null if none is written.' },
+  summary: { type: 'string', description: 'One line, at most 20 words: what this page is about.' },
+  tags: strings,
+  transcription_md: { type: 'string' },
+  legibility: { type: 'string', enum: ['high', 'medium', 'low'] },
+  uncertain_spans: strings,
+  items: {
+    type: 'array',
+    items: object({
+      existing_item_id: nullable({ type: 'string' }),
+      text: { type: 'string' },
+      kind: { type: 'string', enum: ['action', 'followup', 'waiting', 'decision', 'idea', 'question'] },
+      person: nullable({ type: 'string' }),
+      due: nullable(DATE),
+      priority: { type: 'boolean' },
+      status: { type: 'string', enum: ['open', 'done', 'dropped'] },
+      tags: strings,
+    }),
   },
-};
+  closes: {
+    type: 'array',
+    items: object({
+      code: { type: 'integer' },
+      action: { type: 'string', enum: ['done', 'dropped', 'snooze'] },
+      snooze_until: nullable(DATE),
+      evidence: { type: 'string', description: 'The exact mark or words on the page.' },
+    }),
+  },
+});
 
 export function transcribeUser({ docName, pageIndex, dateHint, typedText, priorItems, imageB64 }) {
   const prior = priorItems.length
@@ -123,40 +121,27 @@ ${prior}`,
 // ---- Cross-page dedupe (Haiku) -------------------------------------------------------------
 export const DEDUPE_SYSTEM = `You match newly extracted to-do items against an existing open-item list.
 A match means the SAME commitment rewritten (carried forward, reworded, or with a new date) — not merely the same topic
-or the same person. When unsure, do not match. Respond by calling match_items exactly once.`;
+or the same person. When unsure, do not match. List only the matches: new_ref is the NEW item's label (e.g. "n0"),
+code the OPEN item's number. An empty list is a valid answer.`;
 
-export const MATCH_TOOL = {
-  name: 'match_items',
-  description: 'Report which new items are the same commitment as an existing open item.',
-  input_schema: {
-    type: 'object',
-    properties: {
-      matches: { type: 'array', items: { type: 'object', properties: { new_ref: { type: 'string' }, code: { type: 'integer' } }, required: ['new_ref', 'code'] } },
-    },
-    required: ['matches'],
-  },
-};
+/** Which new items are the same commitment as an existing open item. */
+export const MATCH_SCHEMA = object({
+  matches: { type: 'array', items: object({ new_ref: { type: 'string' }, code: { type: 'integer' } }) },
+});
 
 // ---- Daily plan (Sonnet) -------------------------------------------------------------------
 export const DAILY_SYSTEM = `You are Matt's morning chief of staff, working ONLY from his handwritten-notes ledger.
 Be direct and brief. Your job is to keep him on task: surface what is due, what is slipping, and what he keeps
 rewriting without doing. Do not invent tasks or context. Calendar and email are handled elsewhere — do not
-speculate about meetings. Refer to items by their number. Respond by calling daily_plan exactly once.`;
+speculate about meetings. Refer to items by their number. top3 holds at most three items.`;
 
-export const DAILY_TOOL = {
-  name: 'daily_plan',
-  description: 'The morning plan.',
-  input_schema: {
-    type: 'object',
-    properties: {
-      headline: { type: 'string', description: 'One sentence: the shape of today.' },
-      top3: { type: 'array', maxItems: 3, items: { type: 'object', properties: { code: { type: 'integer' }, why: { type: 'string' } }, required: ['code', 'why'] } },
-      carrying_callout: { type: ['string', 'null'], description: 'If any item has been carried many days, one blunt sentence: do, delegate, or drop.' },
-      drop_candidates: { type: 'array', items: { type: 'integer' }, description: 'Stale items worth explicitly dropping.' },
-    },
-    required: ['headline', 'top3', 'drop_candidates'],
-  },
-};
+/** The morning plan. top3 is capped at three in code (structured outputs don't accept maxItems). */
+export const DAILY_SCHEMA = object({
+  headline: { type: 'string', description: 'One sentence: the shape of today.' },
+  top3: { type: 'array', description: 'At most three items.', items: object({ code: { type: 'integer' }, why: { type: 'string' } }) },
+  carrying_callout: { ...nullable({ type: 'string' }), description: 'If any item has been carried many days, one blunt sentence: do, delegate, or drop. Otherwise null.' },
+  drop_candidates: { type: 'array', items: { type: 'integer' }, description: 'Stale items worth explicitly dropping.' },
+});
 
 // ---- Weekly review (Opus) ------------------------------------------------------------------
 export const WEEKLY_SYSTEM = `You write Matt's Sunday weekly review from his handwritten-notes ledger: what he committed to,

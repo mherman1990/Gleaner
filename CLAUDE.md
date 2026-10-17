@@ -19,7 +19,11 @@ Read README.md for setup and docs/HANDWRITING.md for the notation the extractor 
   - An item that came from only one page and was erased from it is dropped.
 - **Markdown in `notes/` is generated** from SQLite and is idempotent. Never treat it as input.
 - **Model tiering:** Sonnet transcribes, Haiku dedupes, Sonnet writes the daily plan, Opus writes the weekly review.
-  Structured output uses forced tool calls. Static system prompts and the per-run open-loop block carry `cache_control`.
+  Structured output uses `output_config.format` JSON schemas (`structuredParams` / `structuredOutput` in
+  `src/llm/client.js`). Never force a tool: `tool_choice` `tool`/`any` returns a 400 on Sonnet 5.5 and Opus 5.5.
+  The schemas must stay inside the structured-output JSON Schema subset; `test/llm.test.js` lints them.
+  Thinking is always on for the 5.5 models and counts toward `max_tokens`, so keep caps generous (16K).
+  Static system prompts and the per-run open-loop block carry `cache_control`.
   Keep both caching and batching.
 
 ## Conventions
@@ -59,7 +63,13 @@ Verified offline with fixtures and the mock LLM, and covered by `npm test`:
 - the API, its token auth, date validation, and snooze,
 - one ingest at a time across the scheduler and the API (`src/jobs.js`).
 
-Verified against ddvk/rmapi v0.0.35's source (not yet against the live account):
+Verified live on Matt's Pi (v0.1.0, 2026-10-17):
+- rmapi registration, `doctor`, `find -json` (a real notebook's `version` is `0`, so the `version:modifiedClient` key is
+  required), and `get` + unzip + render on a real notebook.
+- Umbrel's proxy lets `/api/*` through without its login: `/api/status` gave 401 without the token and 200 with it.
+- The first live transcription failed: v0.1.0 forced `tool_choice`, which Sonnet 5.5 rejects. v0.1.1 uses structured outputs.
+
+Verified against ddvk/rmapi v0.0.35's source:
 - `rmapi -ni -json find /Daily` prints a JSON array of `{id, name, type, version, modifiedClient, parent, tags, …}`.
   WARNING log lines also go to **stdout**, so `parseFindJson()` reads from where the array starts.
 - `version` is the doc's `.metadata` version, which current firmware doesn't bump, so change detection keys on
@@ -71,17 +81,17 @@ Verified in Docker: the image builds for amd64 and for arm64 (under QEMU). On bo
 better-sqlite3 native module load, and the arm64 container runs fixture ingest and digest end to end.
 
 Not yet verified, in priority order:
-1. **rmapi against the live account.** Run `node src/cli.js doctor`. Expect `documents` > 0 and a JSON `findSample`.
-   Then run one ingest and confirm that a page edited on the tablet is picked up on the next run.
-2. **Real model output.**
-   - Check that forced-tool calls succeed on the configured model IDs.
+1. **Real model output.**
+   - Check that structured-output calls succeed on the configured models: a live `ingest --sync` with `failed: 0`. A
+     page that fails keeps its reason in `pages.error`.
    - Check that the extraction isn't noisy: tune `NOTATION` and the rules in `src/llm/prompts.js` against Matt's actual pages.
-   - Check prompt caching hits in `/api/status` (`cache_read` > 0 on the second page of a run).
+   - Check prompt caching hits in `/api/status` (`cache_read` > 0 on the second page of a run). The static prompt may be
+     under the model's minimum cacheable length, in which case nothing caches and nothing errors.
+2. **rmapi over time.** Confirm that a page edited on the tablet is picked up on the next run.
 3. **On the Pi itself.** Check render time per page and memory use during a batch.
-4. **Umbrel install.** The listing passes Spotter's store checks, and `v0.1.0` is in the store, but nobody has installed it
-   on the Pi yet. Confirm that `PROXY_AUTH_WHITELIST` lets nested paths like `/api/items/14` through while the UI stays
-   behind Umbrel login. Other store apps (e.g. Bazarr) rely on `"/api/*"` for nested APIs, so this should hold.
-   The first automated store sync (the next release after `STORE_REPO` / `STORE_REPO_TOKEN` are set) is also untested.
+4. **Umbrel.** Confirm that `PROXY_AUTH_WHITELIST` lets nested paths like `/api/items/14` through, as it does `/api/status`.
+   Other store apps (e.g. Bazarr) rely on `"/api/*"` for nested APIs, so this should hold. The first automated store
+   sync (the first release after `STORE_REPO` / `STORE_REPO_TOKEN` are set) is also untested.
 
 ## Backlog (not v0.1)
 - Read annotations on the `_Today` PDF by compositing strokes over the rendered PDF page, so ticks on the sheet close items.

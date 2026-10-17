@@ -5,8 +5,8 @@
 //     which bumps carry_days instead of creating a duplicate. carry_days is the "you keep carrying this" signal.
 import { db, newId, nextCode, J, P, setItemStatus, openItems } from '../db.js';
 import { config } from '../config.js';
-import { callTool, toolParams } from '../llm/client.js';
-import { DEDUPE_SYSTEM, MATCH_TOOL } from '../llm/prompts.js';
+import { callStructured, structuredParams } from '../llm/client.js';
+import { DEDUPE_SYSTEM, MATCH_SCHEMA } from '../llm/prompts.js';
 
 const VALID = new Set(['action', 'followup', 'waiting', 'decision', 'idea', 'question']);
 const isDate = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s);
@@ -47,7 +47,7 @@ async function matchAgainstOpen(candidates, excludeIds) {
   const open = openItems().filter((o) => !excludeIds.has(o.id));
   if (!candidates.length || !open.length) return new Map();
   const content = `${candidates.map((c, i) => `NEW n${i}: ${c.text}${c.person ? ` [${c.person}]` : ''}`).join('\n')}\n\n${open.map((o) => `OPEN ${o.code}: ${o.text}${o.person ? ` [${o.person}]` : ''}`).join('\n')}`;
-  const res = await callTool(toolParams({ model: config.llm.triageModel, systemBlocks: [DEDUPE_SYSTEM], content, tool: MATCH_TOOL, maxTokens: 1024 }), 'dedupe');
+  const res = await callStructured(structuredParams({ model: config.llm.triageModel, systemBlocks: [DEDUPE_SYSTEM], content, schema: MATCH_SCHEMA }), 'dedupe');
   const byCode = new Map(open.map((o) => [o.code, o.id]));
   const out = new Map();
   for (const m of res.matches || []) {
@@ -58,8 +58,9 @@ async function matchAgainstOpen(candidates, excludeIds) {
 }
 
 /**
- * Apply one record_page result. Returns a short summary for logging, plus what changed so the caller can
- * regenerate the right markdown: prevDate (the page's old date, if it moved) and itemIds (every item touched).
+ * Apply one page's transcription (shaped by RECORD_PAGE_SCHEMA). Returns a short summary for logging, plus what
+ * changed so the caller can regenerate the right markdown: prevDate (the page's old date, if it moved) and
+ * itemIds (every item touched).
  */
 export async function applyPageResult(pageRow, result, fallbackDate) {
   const pageDate = isDate(result.page_date) ? result.page_date : fallbackDate;
