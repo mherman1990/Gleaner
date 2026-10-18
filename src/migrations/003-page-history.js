@@ -4,9 +4,10 @@
 //   names the item without mentioning it.
 // - page_tags: every tag a page has been read with. A re-read that misses a restricted tag, or a restricted page
 //   erased and written over, stays restricted.
-// Both are only added to. And item_mentions.gone_at: when a read found an item's line no longer on that page (erased or
-// moved). The row stays, for the filter; erasing an item drops it only when no page still has its line. For pages read before this migration, page_tags starts from each page's current tags, and
-// page_closes from the close notation in its text: numbers after ✓, x, ✗, done, drop or snooze, or before ✓ or →
+// Both are only added to. And item_mentions.gone_at: when a read found an item's line no longer on that page (erased
+// or moved). The row stays, for the filter; erasing an item drops it only when no page still has its line.
+// For pages read before this migration, page_tags starts from each page's current tags, and page_closes from the
+// close notation in its text: numbers after ✓, x, ✗, done, drop or snooze, or before ✓ or →
 // (one, a list or a range: "✓14, 15", "✓ 14 15", "12 & 14 → Fri", "✓ 12–15"), linked to the items with those
 // numbers (a page that only looks like it closes one is hidden too), and the words a handwriting close quoted as its
 // evidence. A checked box that left no such trace can't be found.
