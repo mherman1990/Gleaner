@@ -59,7 +59,13 @@ export function parseRegistry(text) {
   if (version && Number(version) !== 1) warnings.push(`version ${version}: this Gleaner reads version 1`);
   if (!isNull(doc.programs) && !isMap(doc.programs)) errors.push('programs must be a mapping');
   const programs = isMap(doc.programs) ? doc.programs : {};
-  for (const [k, v] of Object.entries(programs)) if (isMap(v)) unknownKeys(v, KEYS.program, `programs.${k}: `);
+  for (const [k, v] of Object.entries(programs)) {
+    if (isNull(v)) continue; // a program still to be filled in
+    if (!isMap(v)) { errors.push(`programs.${k} must be a mapping with a name`); continue; }
+    unknownKeys(v, KEYS.program, `programs.${k}: `);
+    text1(v.name, `programs.${k}.name`);
+    text1(v.description, `programs.${k}.description`);
+  }
   if (!Array.isArray(doc.projects)) errors.push('projects must be a list');
 
   const projects = [];
@@ -134,6 +140,8 @@ export function parseRegistry(text) {
       const owner = names.get(key(w));
       if (owner === undefined) names.set(key(w), p.name);
       else if (owner !== p.name) errors.push(`write_as "${w}" of ${p.name} already means ${owner}`);
+      const others = [...(firstNames.get(key(w)) || [])].filter((n) => n !== p.name);
+      if (others.length) warnings.push(`write_as "${w}" of ${p.name} is also the first name of ${others.join(', ')}: it will always mean ${p.name}`);
     }
   }
 

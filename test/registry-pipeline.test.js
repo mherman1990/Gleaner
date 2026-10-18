@@ -35,8 +35,9 @@ function page(params) {
   };
 }
 
+let duringTranscribe = null; // a test can change things while the "model" is reading a page
 const fake = await fakeAnthropic((params, purpose) =>
-  purpose === 'transcribe' ? page(params) : purpose === 'dedupe' ? { matches: [] } : 'Invented weekly review text.');
+  purpose === 'transcribe' ? (duringTranscribe?.(), page(params)) : purpose === 'dedupe' ? { matches: [] } : 'Invented weekly review text.');
 const fx = fs.mkdtempSync(path.join(os.tmpdir(), 'gleaner-fx-'));
 fs.cpSync(path.join(FIXTURES, 'Calls'), path.join(fx, 'Calls'), { recursive: true });
 const dataDir = tempEnv('regpipe', {
@@ -114,6 +115,21 @@ test('editing the registry changes the prompt (a cache miss) and maps the tag fr
   for (const i of items()) assert.deepEqual(P(i.tags), ['widget-report', 'bridge-permit']);
   assert.deepEqual(unregisteredTags(P(items()[1].tags)), []);
   assert.equal(items()[1].person, 'Sam Fixture', "the previous test's hand edit outlasts this re-read, which says Alex");
+});
+
+test('a registry edited mid-run takes effect next run; this run keeps the one its prompts used, and records it', { skip }, async () => {
+  const file = path.join(dataDir, 'projects.yaml');
+  const before = registryStatus().version;
+  duringTranscribe = () => fs.writeFileSync(file, fs.readFileSync(REGISTRY, 'utf8')); // mystery-tag is no alias here
+  try {
+    markForRetranscription('all');
+    await ingest({ mode: 'sync' });
+  } finally { duringTranscribe = null; }
+  const call = fake.requests.filter((q) => q.purpose === 'transcribe').at(-1).params;
+  assert.match(call.system[0].text, /^- bridge-permit: .*mystery-tag\)$/m, 'the prompt had the registry from the start of the run');
+  assert.deepEqual(P(items()[1].tags), ['widget-report', 'bridge-permit'], 'applied with that same registry');
+  assert.equal(lastRunDetail().registry, before, 'and the run records it');
+  assert.notEqual(registryStatus().version, before, 'the edit is live for the next run');
 });
 
 after(() => { db.close(); fake.close(); });

@@ -53,6 +53,9 @@ test('structural errors fail validation, every one reported in a single pass', (
     ['projects[0].tag must be a single value, not a list or mapping', 'projects[0]: tag is required']);
   assert.deepEqual(errorsOf(project('contexts: [A]\n')), ['context "A" is also a project tag or alias']);
   assert.deepEqual(errorsOf(project('people:\n  - name: Jo One\n  - name: jo one\n')), ['person "jo one" is listed twice']);
+  assert.deepEqual(errorsOf(`programs:\n  north: []\n${project('')}`), ['programs.north must be a mapping with a name']);
+  assert.deepEqual(errorsOf(`programs:\n  north: {name: [North]}\n${project('')}`), ['programs.north.name must be a single value, not a list or mapping']);
+  assert.deepEqual(errorsOf(`programs:\n  north:\n${project('')}`), [], 'a program still to be filled in passes');
   assert.deepEqual(errorsOf('projects:\n  - tag: #kite\n    name: Kites\n    sensitivity: normal\n'), ['projects[0]: tag is required'],
     'unquoted, the # starts a YAML comment');
 
@@ -111,6 +114,11 @@ test('people: full names and write_as resolve; a first name shared by two people
   assert.equal(isFirstNameOf('Alex', 'Alex', r), false, 'only a registry person has a first name to match');
   assert.equal(isFirstNameOf('Alex', 'Alex Two', null), false);
   const oneWord = parseRegistry(fixture.replace('people:\n', 'people:\n  - name: Alex\n'));
+
+  // A write_as form that is also someone else's first name is the registry's own choice: it wins, with a warning.
+  const chosen = parseRegistry(fixture.replace('write_as: [Alex O]', 'write_as: [Alex O, Alex]'));
+  assert.deepEqual(resolvePerson('Alex', chosen), { name: 'Alex One', known: true, ambiguous: false });
+  assert.ok(chosen.warnings.includes('write_as "Alex" of Alex One is also the first name of Alex Two: it will always mean Alex One'));
   assert.equal(isFirstNameOf('Alex', 'Alex Two', oneWord), false, 'a one-word registry person is that person, not a first name');
 
   assert.equal(personAmbiguous({ person: 'Pat Example', assignee: 'Alex' }, r), true, 'either name');
