@@ -4,7 +4,8 @@
 //   names the item without mentioning it.
 // - page_tags: every tag a page has been read with. A re-read that misses a restricted tag, or a restricted page
 //   erased and written over, stays restricted.
-// Both are only added to. For pages read before this migration, page_tags starts from each page's current tags, and
+// Both are only added to. And item_mentions.gone_at: when a read found an item's line no longer on that page (erased or
+// moved). The row stays, for the filter; erasing an item drops it only when no page still has its line. For pages read before this migration, page_tags starts from each page's current tags, and
 // page_closes from the close notation in its text: numbers after ✓, x, ✗, done, drop or snooze, or before ✓ or →
 // (one, a list or a range: "✓14, 15", "✓ 14 15", "12 & 14 → Fri", "✓ 12–15"), linked to the items with those
 // numbers (a page that only looks like it closes one is hidden too), and the words a handwriting close quoted as its
@@ -50,6 +51,7 @@ CREATE TABLE IF NOT EXISTS page_tags (
   PRIMARY KEY (page_id, tag)
 );
 `);
+  if (!db.prepare('PRAGMA table_info(item_mentions)').all().some((c) => c.name === 'gone_at')) db.exec('ALTER TABLE item_mentions ADD COLUMN gone_at TEXT');
   const addTag = db.prepare('INSERT OR IGNORE INTO page_tags (page_id, tag) VALUES (?, ?)');
   const addClose = db.prepare('INSERT OR IGNORE INTO page_closes (page_id, item_id) VALUES (?, ?)');
   const byCode = new Map(db.prepare('SELECT id, code FROM items WHERE code IS NOT NULL').all().map((i) => [i.code, i.id]));

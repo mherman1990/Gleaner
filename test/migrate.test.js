@@ -92,6 +92,8 @@ test('pages read before the upgrade are linked to the items their text closes, a
   assert.deepEqual(v014.prepare(`SELECT page_id, item_id FROM page_closes WHERE page_id < 'pg-h' ORDER BY page_id, item_id`).all().map((r) => `${r.page_id}:${r.item_id}`),
     ['pg-a:it_c', 'pg-b:it_d', 'pg-c:it_14', 'pg-c:it_e', 'pg-c:it_f', 'pg-c:it_h', 'pg-e:it_a', 'pg-e:it_b', 'pg-f:it_12', 'pg-f:it_c',
       'pg-f:it_g', 'pg-g:it_e', 'pg-g:it_f', 'pg-g:it_h'], 'every number of a list, emoji marks, and no link from prose (box14, 6 people, Q3 → Q4) or the words Gleaner writes itself');
+  assert.ok(v014.prepare('PRAGMA table_info(item_mentions)').all().some((c) => c.name === 'gone_at'), 'mentions can be marked gone');
+  assert.equal(v014.prepare('SELECT COUNT(*) AS n FROM item_mentions WHERE gone_at IS NOT NULL').get().n, 0, 'every existing line counts as on its page');
   assert.deepEqual(v014.prepare('SELECT page_id, tag FROM page_tags ORDER BY page_id, tag').all().map((r) => `${r.page_id}:${r.tag}`),
     ['pg-1:45Z', 'pg-1:widget-permits', 'pg-a:orchard']);
   v014.close();

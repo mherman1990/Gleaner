@@ -89,12 +89,20 @@ export function changeItem(id, client, write) {
 /**
  * Close, drop, snooze or reopen an item. `by` is the client (closed_by, and the events' client). Setting the status
  * an item already has changes nothing (a second "done" keeps the first close's time and client), except a snooze to a
- * new date. Returns the number of rows changed.
+ * new date, and a drop of an item dropped only because its line left a page. Returns the number of rows changed.
  */
 export function setItemStatus(id, status, by, evidence = null, snoozeUntil = null) {
   return db.transaction(() => { // decide on the row as it is under the write lock, not as it was a moment before
-    const cur = db.prepare('SELECT status, snooze_until FROM items WHERE id=?').get(id);
-    if (!cur || (cur.status === status && (status !== 'snoozed' || cur.snooze_until === snoozeUntil))) return 0;
+    const cur = db.prepare('SELECT code, status, snooze_until, closed_by FROM items WHERE id=?').get(id);
+    if (!cur) return 0;
+    // Dropping an item that was only dropped because its line left a page makes it a real drop, by `by`: a line for
+    // it written again later doesn't bring it back.
+    if (status === 'dropped' && cur.status === 'dropped' && cur.closed_by === 'erased' && by !== 'erased') {
+      db.prepare('UPDATE items SET closed_by=?, closed_at=?, close_evidence=? WHERE id=?').run(by, now(), evidence, id);
+      recordEvent(by, cur.code, 'status', 'dropped', 'dropped');
+      return 1;
+    }
+    if (cur.status === status && (status !== 'snoozed' || cur.snooze_until === snoozeUntil)) return 0;
     const closing = status === 'done' || status === 'dropped';
     return changeItem(id, by, () => db.prepare(`UPDATE items SET status=?, snooze_until=?, closed_at=?, closed_by=?, close_evidence=? WHERE id=?`)
       .run(status, status === 'snoozed' ? snoozeUntil : null, closing ? now() : null, closing ? by : null, closing ? evidence : null, id).changes);
