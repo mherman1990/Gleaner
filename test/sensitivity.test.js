@@ -17,7 +17,9 @@ fs.copyFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixture
 
 const { paths } = await import('../src/config.js');
 const { db, setItemStatus, startRun, endRun } = await import('../src/db.js');
-const { applyPageResult } = await import('../src/pipeline/ledger.js');
+const { applyPageResult, itemsOnPage } = await import('../src/pipeline/ledger.js');
+const { visibility } = await import('../src/sensitivity.js');
+const Database = (await import('better-sqlite3')).default;
 const { writeDayFiles, writeOpenLoops } = await import('../src/output/markdown.js');
 const { startServer, router } = await import('../src/server.js');
 const { addToken } = await import('../src/auth.js');
@@ -93,41 +95,44 @@ after(() => { server.close(); db.close(); });
 const base = `http://127.0.0.1:${server.address().port}`;
 const call = (url, token, init = {}) => fetch(base + url, { ...init, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...init.headers } });
 
-const codes = db.prepare('SELECT code FROM items ORDER BY code').all().map((r) => r.code);
-const dates = db.prepare('SELECT DISTINCT page_date FROM pages').all().map((r) => r.page_date);
-// Requests that reach every GET route. A new GET route without an entry here fails the first test.
-const PROBES = {
+// Requests that reach every GET route, for every item and page date there is now. A new GET route without an entry
+// here fails the first test.
+const PROBES = () => ({
   '/items': ['', '?status=all', '?status=closed', '?status=snoozed', '?tag=moonbase', '?tag=mb', '?tag=LUNAR', '?tag=widget-report']
     .map((q) => `/api/items${q}`),
-  '/items/:code': codes.map((c) => `/api/items/${c}`),
+  '/items/:code': db.prepare('SELECT code FROM items ORDER BY code').all().map((r) => `/api/items/${r.code}`),
   '/open-loops.md': ['/api/open-loops.md'],
   '/digest/today': ['/api/digest/today'],
   '/notes': ['/api/notes?from=2026-10-01&to=2026-10-31', '/api/notes?from=2026-10-14&to=2026-10-14'],
-  '/notes/:date': dates.map((d) => `/api/notes/${d}`),
+  '/notes/:date': db.prepare('SELECT DISTINCT page_date FROM pages').all().map((r) => `/api/notes/${r.page_date}`),
   '/search': ['/api/search?q=', '/api/search?q=MARKER', '/api/search?q=crater', '/api/search?q=dust'],
   '/events': ['/api/events?since=2000-01-01', '/api/events?since=2000-01-01&client=mayer', '/api/events?since=2000-01-01&client=handwriting'],
   '/status': ['/api/status'],
-};
-
-test('every GET route is swept', () => {
-  const routes = router().stack.filter((l) => l.route?.methods.get).map((l) => l.route.path);
-  assert.deepEqual(routes.filter((p) => !PROBES[p]), [], 'add probes for these routes');
 });
-
-test('a normal-sensitivity token never gets restricted work back, from any GET route', async () => {
-  const leaks = [];
-  for (const url of Object.values(PROBES).flat()) {
+/** What a normal-sensitivity token gets back from every route that it shouldn't. */
+async function leaks() {
+  const found = [];
+  for (const url of Object.values(PROBES()).flat()) {
     const res = await call(url, notebook);
     const body = await res.text();
     assert.ok([200, 403, 404].includes(res.status), `${url}: ${res.status} ${body}`);
-    if (LEAK.test(body)) leaks.push(`${url}: ${body.match(LEAK)[0]}`);
+    if (LEAK.test(body)) found.push(`${url}: ${body.match(LEAK)[0]}`);
   }
-  assert.deepEqual(leaks, []);
+  return found;
+}
+
+test('every GET route is swept', () => {
+  const routes = router().stack.filter((l) => l.route?.methods.get).map((l) => l.route.path);
+  assert.deepEqual(routes.filter((p) => !PROBES()[p]), [], 'add probes for these routes');
+});
+
+test('a normal-sensitivity token never gets restricted work back, from any GET route', async () => {
+  assert.deepEqual(await leaks(), []);
 });
 
 test('the same requests with an "all" token do reach every piece of restricted content', async () => {
   let all = '';
-  for (const url of Object.values(PROBES).flat()) all += await (await call(url, mayer)).text();
+  for (const url of Object.values(PROBES()).flat()) all += await (await call(url, mayer)).text();
   for (const m of ['MARKER-LUNA-PAGE', 'MARKER-LUNA-A', 'MARKER-LUNA-C', 'MARKER-LUNA-CLOSED', 'MARKER-LUNA-SNOOZED', 'MARKER-LUNA-D',
     'MARKER-LUNA-P4', 'MARKER-LUNA-CLOSER', 'MARKER-LUNA-EVIDENCE', 'MARKER-LUNA-L', 'MARKER-LUNA-BOX', 'MARKER-LUNA-RUN', 'moonbase']) assert.ok(all.includes(m), `the fixture reaches ${m}`);
 });
@@ -169,15 +174,6 @@ test('a normal-sensitivity client can\'t change what it can\'t see', async () =>
   assert.equal(own.status, 200);
 });
 
-test('a normal client still gets the latest closed items it may see, however many restricted ones are newer', async () => {
-  const insert = db.prepare(`INSERT INTO items (id, code, text, kind, tags, status, closed_at, closed_by) VALUES (?,?,?,'action','["moonbase"]','done',?, 'mayer')`);
-  const top = db.prepare('SELECT MAX(code) AS n FROM items').get().n;
-  for (let i = 1; i <= 120; i++) insert.run(`it_bulk${i}`, top + i, `Bulk MARKER-LUNA close ${i}`, new Date(Date.now() + i * 1000).toISOString());
-  const closed = await (await call('/api/items?status=closed', notebook)).json();
-  assert.ok(closed.some((i) => i.code === permit), 'the cap applies after the filter');
-  assert.doesNotMatch(JSON.stringify(closed), LEAK);
-});
-
 test('with no registry loaded, normal sensitivity is refused (503), not shown everything', async () => {
   const text = fs.readFileSync(registryFile, 'utf8');
   fs.rmSync(registryFile);
@@ -189,4 +185,123 @@ test('with no registry loaded, normal sensitivity is refused (503), not shown ev
     }
     assert.equal((await call('/api/items', mayer)).status, 200, '"all" doesn\'t need the registry');
   } finally { fs.writeFileSync(registryFile, text); }
+});
+
+test('a re-read of a page that ticked off or closed restricted work keeps it hidden, and doesn\'t copy the ticked line', async () => {
+  const moon = [{ text: 'Sign the MARKER-LUNA-TICK form' }, { text: 'Price the MARKER-LUNA-NUM rover' }];
+  await page('2026-10-22', ['moonbase'], lines('MARKER-LUNA crater budget', moon), moon);
+  const [tick, num] = moon.map((i) => code(i.text));
+  const ticked = await page('2026-10-23', ['orchard'], '☑ Sign the MARKER-LUNA-TICK form', [], [{ code: tick, action: 'done', snooze_until: null, evidence: '☑' }]);
+  const numbered = await page('2026-10-23', ['orchard'], `✓${num} MARKER-LUNA rover priced at 4M`, [], [{ code: num, action: 'done', snooze_until: null, evidence: `✓${num}` }]);
+  // Both items are closed now, so they're no longer in the open list a re-read gets, and the model can't repeat the
+  // closes. The page still names the item it ticked off as one of its own, and the link from each page stays.
+  assert.deepEqual(itemsOnPage(ticked.id).map((i) => [i.text, i.status]), [['Sign the MARKER-LUNA-TICK form', 'done']]);
+  await reread(ticked, '2026-10-23', ['orchard'], '☑ Sign the MARKER-LUNA-TICK form\n- ☐ Water the pear trees', [{ text: 'Water the pear trees' }]);
+  await reread(numbered, '2026-10-23', ['orchard'], `✓${num} MARKER-LUNA rover priced at 4M`, []);
+  const vis = visibility('normal');
+  assert.equal(vis.page(ticked), false);
+  assert.equal(vis.page(numbered), false);
+  // The ticked line read as a done item without its item's id (the model missing the link) is that item, not a new one.
+  await reread(ticked, '2026-10-23', ['orchard'], '☑ Sign the MARKER-LUNA-TICK form\n- ☐ Water the pear trees',
+    [{ text: 'Sign the MARKER-LUNA-TICK form', status: 'done' }, { text: 'Water the pear trees', existing_item_id: idOf('Water the pear trees') }]);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM items WHERE text=?').get('Sign the MARKER-LUNA-TICK form').n, 1);
+  assert.equal(visibility('normal').page(ticked), false);
+  assert.deepEqual(await leaks(), []);
+});
+
+test('an open line written again on a page whose item for it is done is a new commitment', async () => {
+  const press = [{ text: 'Rinse the cider press' }];
+  const q = await page('2026-10-23', ['orchard'], lines('Cider', press), press);
+  const id = idOf(press[0].text);
+  await reread(q, '2026-10-23', ['orchard'], '☑ Rinse the cider press', [{ ...press[0], status: 'done', existing_item_id: id }]);
+  await reread(q, '2026-10-23', ['orchard'], '☑ Rinse the cider press\n- ☐ Rinse the cider press', press); // the new line, without an id
+  assert.deepEqual(db.prepare('SELECT status FROM items WHERE text=? ORDER BY code').all(press[0].text).map((i) => i.status), ['done', 'open']);
+});
+
+test('a restricted page stays restricted when a re-read misses its tag, or it is erased and written over', async () => {
+  const budget = [{ text: 'Draft the MARKER-LUNA-Q budget note' }];
+  const p = await page('2026-10-24', ['moonbase'], lines('MARKER-LUNA-Q budget', budget), budget);
+  await page('2026-10-25', ['widget-report'], lines('Carried', budget), budget); // carried to a normal page
+  // The model doesn't tag the page this time, though the line is the same.
+  await reread(p, '2026-10-24', [], lines('MARKER-LUNA-Q budget', budget), [{ ...budget[0], existing_item_id: idOf(budget[0].text) }]);
+  const erased = [{ text: 'Sign the MARKER-LUNA-ERASED lease' }];
+  const e = await page('2026-10-26', ['moonbase'], lines('MARKER-LUNA-ERASED lease', erased), erased);
+  await reread(e, '2026-10-26', ['orchard'], lines('Orchard fence', [{ text: 'Mend the orchard fence' }]), [{ text: 'Mend the orchard fence' }]);
+  assert.equal(db.prepare('SELECT status FROM items WHERE text=?').get(erased[0].text).status, 'dropped', 'erased from the page');
+  const vis = visibility('normal');
+  for (const row of [p, e]) assert.equal(vis.page(row), false, row.id);
+  for (const text of [budget[0].text, erased[0].text, 'Mend the orchard fence']) assert.equal(vis.item({ id: idOf(text) }), false, text);
+  assert.deepEqual(await leaks(), []);
+});
+
+test('rows written after the judgement are hidden until the next one', () => {
+  const vis = visibility('normal');
+  db.prepare(`INSERT INTO pages (id, doc_id, page_index, rm_hash, status, tags) VALUES ('pg-late', 'doc1', 99, 'late', 'transcribed', '["orchard"]')`).run();
+  db.prepare(`INSERT INTO items (id, code, text, kind, tags, status) VALUES ('it_late', 9999, 'Rake the late leaves', 'action', '[]', 'open')`).run();
+  assert.deepEqual([vis.page({ id: 'pg-late' }), vis.item({ id: 'it_late' }), vis.code(9999)], [false, false, false]);
+  const next = visibility('normal');
+  assert.deepEqual([next.page({ id: 'pg-late' }), next.item({ id: 'it_late' }), next.code(9999)], [true, true, true]);
+});
+
+// Another process (a `docker exec … cli.js ingest`) writes just before `sql` is first run in this one.
+function writeBefore(sql, write) {
+  const other = new Database(path.join(dataDir, 'gleaner.db'), { timeout: 50 });
+  const prepare = db.prepare;
+  const result = { wrote: false };
+  db.prepare = function (text, ...rest) {
+    if (text.includes(sql)) {
+      db.prepare = prepare;
+      try { write(other); result.wrote = true; } catch (e) { result.error = e.code; }
+    }
+    return prepare.call(this, text, ...rest);
+  };
+  result.done = () => { db.prepare = prepare; other.close(); };
+  return result;
+}
+
+test('a read sees one snapshot: a page another process makes restricted mid-request doesn\'t show its new text', async () => {
+  const orchard = db.prepare(`SELECT * FROM pages WHERE transcription_md LIKE '%Orchard walk%'`).get();
+  const w = writeBefore('FROM page_closes', (other) => other.prepare(`UPDATE pages SET tags='["moonbase"]', transcription_md=? WHERE id=?`)
+    .run('Orchard walk MARKER-LUNA-RACE', orchard.id));
+  let body;
+  try { body = await (await call('/api/notes/2026-10-18', notebook)).text(); } finally { w.done(); }
+  assert.ok(w.wrote, 'the other process wrote while the request was being answered');
+  assert.doesNotMatch(body, LEAK);
+  assert.equal(visibility('normal').page(orchard), false, 'and the next request hides the page');
+  db.prepare('UPDATE pages SET tags=?, transcription_md=? WHERE id=?').run(orchard.tags, orchard.transcription_md, orchard.id);
+});
+
+test('a change checks and changes the item under one lock: another process can\'t make it restricted in between', async () => {
+  const writer = addToken('race-writer', { scopes: 'read,write', sensitivity: 'normal' });
+  const c = code('Prune the orchard rows');
+  const w = writeBefore('SELECT * FROM items WHERE code=?', (other) => other.prepare(`UPDATE items SET tags='["moonbase"]', text='Prune the MARKER-LUNA-RACE rows' WHERE code=?`).run(c));
+  let res;
+  try { res = await call(`/api/items/${c}`, writer, { method: 'POST', body: JSON.stringify({ due: '2026-11-02' }) }); } finally { w.done(); }
+  assert.equal(w.error, 'SQLITE_BUSY', 'the other process had to wait');
+  assert.equal(res.status, 200);
+  assert.doesNotMatch(await res.text(), LEAK);
+});
+
+// Last: it adds 740 items, which the sweeps above would request one by one.
+test('a normal client still gets the latest items it may see, and a tag\'s older ones, however many newer items there are', async () => {
+  await page('2026-10-21', ['bridge-permit'], lines('Permit paperwork', [{ text: 'File the permit paperwork', mark: ' #bp' }]),
+    [{ text: 'File the permit paperwork', tags: ['bp'] }]);
+  setItemStatus(idOf('File the permit paperwork'), 'done', 'mayer');
+  const insert = db.prepare(`INSERT INTO items (id, code, text, kind, tags, status, closed_at, closed_by) VALUES (?,?,?,'action',?,?,?,?)`);
+  const top = db.prepare('SELECT MAX(code) AS n FROM items').get().n;
+  const later = (i) => new Date(Date.now() + i * 1000).toISOString();
+  // Newer than every visible item: 120 restricted closes (the closed list's cap is 100) and 500 restricted items
+  // (the full list's cap).
+  for (let i = 1; i <= 120; i++) insert.run(`it_bulk${i}`, top + i, `Bulk MARKER-LUNA close ${i}`, '["moonbase"]', 'done', later(i), 'mayer');
+  for (let i = 1; i <= 500; i++) insert.run(`it_open${i}`, top + 120 + i, `Bulk MARKER-LUNA item ${i}`, '["moonbase"]', 'open', null, null);
+  const closed = await (await call('/api/items?status=closed', notebook)).json();
+  assert.ok(closed.some((i) => i.code === permit), 'the closed list\'s cap applies after the filter');
+  const all = await (await call('/api/items?status=all', notebook)).json();
+  assert.ok(all.some((i) => i.code === permit), 'and the full list\'s');
+  assert.doesNotMatch(JSON.stringify([closed, all]), LEAK);
+  // And 120 newer closes of another project, which a normal client may see.
+  for (let i = 1; i <= 120; i++) insert.run(`it_wr${i}`, top + 620 + i, `Bulk widget close ${i}`, '["widget-report"]', 'done', later(200 + i), 'mayer');
+  for (const [url, token] of [['/api/items?status=closed&tag=bridge-permit', notebook], ['/api/items?status=closed&tag=BP', notebook], ['/api/items?status=all&tag=bp', mayer]]) {
+    assert.deepEqual((await (await call(url, token)).json()).map((i) => i.text), ['File the permit paperwork'], `${url}: the tag applies before the cap`);
+  }
 });

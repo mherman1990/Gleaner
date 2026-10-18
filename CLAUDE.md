@@ -38,10 +38,14 @@ Read README.md for setup and docs/HANDWRITING.md for the notation the extractor 
     each with scopes (`read`, `write`, `create`, `ingest`, `digest`) and a sensitivity (`all` or `normal`). CLI
     `token add|revoke|list`. `GLEANER_API_TOKEN` is client `legacy` through v0.2.x; `/ui-api` is client `ui`.
   - `src/sensitivity.js`: every route that returns content asks `visibility()`. At `normal`, an item whose tags are
-    or were restricted (aliases count; history from the events), or mentioned on a page with a restricted tag, is
-    left out of everything, and so is any page that mentions, closes or snoozes one (`page_closes`, migration 003);
-    with no registry it's a 503. `applyPageResult` writes a page and its items in one transaction, after the dedupe
-    call. `test/sensitivity.test.js` sweeps every GET route; a new route needs a probe there.
+    or were restricted (aliases count; history from the events), or mentioned on a page whose tags are or were
+    restricted (`page_tags`), is left out of everything, and so is any page that mentions, closes or snoozes one
+    (`page_closes`). Both tables (migration 003) are only added to, so a re-read never unhides anything; rows another
+    process wrote after the judgement are hidden; with no registry it's a 503. Each GET route reads in one
+    transaction with its `visibility()` call, and `POST /items/:code` checks and writes under one write lock.
+    `applyPageResult` writes a page and its items in one transaction, after the dedupe call. The prompt and the dedupe
+    see a page's closed items too (`itemsOnPage`), so a re-read ticked line links back instead of duplicating.
+    `test/sensitivity.test.js` sweeps every GET route; a new route needs a probe there.
   - Every item write goes through `changeItem()` / `recordEvent()` in `src/db.js`, which write the `events` rows
     with the client; `editItem()` and `setItemStatus()` require one. `src/events.js` reads them (`/api/events`, the
     digest's "Mayer closed 3" line). A new mutating route needs an events test (`test/events.test.js` checks).

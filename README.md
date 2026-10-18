@@ -120,10 +120,12 @@ v0.2.x, as client `legacy` with every scope. With no token at all, `/api` is dis
 
 **Sensitivity.** A token made with `--sensitivity normal` (the default) never gets restricted work back: projects
 marked `sensitivity: restricted` in the registry. An item is left out if any of its tags is, or ever was, restricted,
-or if it was written on a page that has one. A page is left out whole if it has a restricted tag, or if it holds,
-carries or ticks off a restricted item. Notes are rendered without those pages, and search, events, open loops and the
-page counts in `status` leave them out too; a close by number keeps its words to itself. The digest covers all work, so it's a 403. With no
-registry loaded nothing can be judged, so these tokens get 503 until one is.
+or if it was written on a page that is, or ever was, tagged with one. A page is left out whole if it has or had a
+restricted tag, or if it holds, carries, ticks off or closes by number a restricted item, even after a later read of
+the page no longer shows that. Notes are rendered without those pages, and search, events, open loops and the page
+counts in `status` leave them out too; a close by number keeps its words to itself. The digest covers all work, so it's
+a 403. With no registry loaded nothing can be judged, so these tokens get 503 until one is. Hiding errs wide: a page
+once tagged restricted stays hidden after it's erased and written over.
 
 **Audit trail.** Every change to an item writes a row per changed field to `events`: who (`handwriting`, `erased`,
 `ui`, `cli`, `legacy`, or the token's client), the item, the field, and the old and new values. `closed_by` is the

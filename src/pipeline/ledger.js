@@ -1,8 +1,9 @@
 // The ledger turns per-page extraction into durable open loops.
 //  1. Same-page items are updated in place (existing_item_id) so re-transcribing an edited page never duplicates.
 //  2. Number-based closes ("✓14") update earlier items.
-//  3. Genuinely new items are checked against all open loops (Haiku) — a match means he rewrote/carried it,
-//     which bumps carry_days instead of creating a duplicate. carry_days is the "you keep carrying this" signal.
+//  3. Genuinely new items are checked against all open loops and the page's own earlier items (Haiku) — a match means
+//     he rewrote/carried it, which bumps carry_days instead of creating a duplicate. carry_days is the "you keep
+//     carrying this" signal.
 // Every change here is an event by "handwriting" (an item erased from its page: "erased"); see changeItem() in db.js.
 import { db, newId, nextCode, J, P, setItemStatus, openItems, changeItem, recordEvent } from '../db.js';
 import { config, normTime } from '../config.js';
@@ -13,8 +14,19 @@ import { DEDUPE_SYSTEM, MATCH_SCHEMA } from '../llm/prompts.js';
 const VALID = new Set(['action', 'followup', 'waiting', 'decision', 'idea', 'question']);
 const isDate = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s);
 
+/** The items with a line on this page (its mentions): the ones erasing that line can drop. */
 export function priorItemsForPage(pageId) {
   return db.prepare(`SELECT i.id, i.text, i.status FROM items i JOIN item_mentions m ON m.item_id = i.id WHERE m.page_id = ?`).all(pageId);
+}
+
+/**
+ * Every item this page names: its own lines, and the items it closed or snoozed by number or by a checked box.
+ * The prompt lists them as the page's earlier items, so a re-read links a ticked line back to its item (closed by
+ * now, so no longer in the open list) instead of making a new one.
+ */
+export function itemsOnPage(pageId) {
+  return db.prepare(`SELECT id, code, text, person, status FROM items WHERE id IN
+    (SELECT item_id FROM item_mentions WHERE page_id = ? UNION SELECT item_id FROM page_closes WHERE page_id = ?) ORDER BY code`).all(pageId, pageId);
 }
 
 function mention(itemId, pageId, pageDate) {
@@ -85,16 +97,23 @@ function refreshItem(id, it, pageDate, r) {
   if ((it.status === 'done' || it.status === 'dropped') && cur.status !== it.status) setItemStatus(id, it.status, 'handwriting', 'checked on page');
 }
 
-async function matchAgainstOpen(candidates, excludeIds) {
-  const open = openItems().filter((o) => !excludeIds.has(o.id));
+/**
+ * Which new lines are the same commitment as an existing item: an open one, or one this page already names whatever
+ * its status (a ticked line re-read without its id is the item it closed, not a new one). An open line never matches
+ * a closed item: writing a done task again is a new commitment.
+ */
+async function matchExisting(candidates, excludeIds, pageId) {
+  const open = [...new Map([...openItems(), ...itemsOnPage(pageId)].map((o) => [o.id, o])).values()].filter((o) => !excludeIds.has(o.id));
   if (!candidates.length || !open.length) return new Map();
   const content = `${candidates.map((c, i) => `NEW n${i}: ${c.text}${c.person ? ` [${c.person}]` : ''}`).join('\n')}\n\n${open.map((o) => `OPEN ${o.code}: ${o.text}${o.person ? ` [${o.person}]` : ''}`).join('\n')}`;
   const res = await callStructured(structuredParams({ model: config.llm.triageModel, systemBlocks: [DEDUPE_SYSTEM], content, schema: MATCH_SCHEMA }), 'dedupe');
-  const byCode = new Map(open.map((o) => [o.code, o.id]));
+  const byCode = new Map(open.map((o) => [o.code, o]));
+  const closed = (o) => o.status === 'done' || o.status === 'dropped';
   const out = new Map();
   for (const m of res.matches || []) {
     const idx = Number(String(m.new_ref).replace(/^n/, ''));
-    if (byCode.has(m.code) && candidates[idx]) out.set(idx, byCode.get(m.code));
+    const o = byCode.get(m.code);
+    if (o && candidates[idx] && !out.has(idx) && !(closed(o) && candidates[idx].status === 'open')) out.set(idx, o.id);
   }
   return out;
 }
@@ -108,23 +127,26 @@ async function matchAgainstOpen(candidates, excludeIds) {
 export async function applyPageResult(pageRow, result, fallbackDate, r = currentRegistry()) {
   const pageDate = isDate(result.page_date) ? result.page_date : fallbackDate;
   const items = (result.items || []).filter((raw) => raw?.text?.trim()).map((raw) => normalize(raw, r));
-  const priorIds = new Set(priorItemsForPage(pageRow.id).map((p) => p.id));
+  const priorIds = new Set(itemsOnPage(pageRow.id).map((p) => p.id));
   const same = items.filter((it) => it.existing_item_id && priorIds.has(it.existing_item_id));
   const fresh = items.filter((it) => !same.includes(it));
 
   // Carry-forward detection for new items, before anything is written: if the call fails, the page stays as it was
-  // and is read again next run. This page's own earlier items are still open here, so one the model re-extracted
+  // and is read again next run. This page's own earlier items are candidates too, so one the model re-extracted
   // without existing_item_id (or reworded) matches and keeps its number instead of being dropped as "erased" and
-  // re-created under a new one.
-  const matches = await matchAgainstOpen(fresh, new Set(same.map((it) => it.existing_item_id)));
+  // re-created under a new one, and a ticked line doesn't become a second, done copy of the item it closed.
+  const matches = await matchExisting(fresh, new Set(same.map((it) => it.existing_item_id)), pageRow.id);
 
   // Then everything at once, under the write lock: no reader sees the page's new text without its items (which the
   // sensitivity filter goes by), and every decision uses the rows as they are now, not as before the call.
+  const pageTags = canonicalTags(result.tags, r);
   return db.transaction(() => {
     const prevDate = db.prepare('SELECT page_date FROM pages WHERE id=?').get(pageRow.id)?.page_date || null;
     db.prepare(`UPDATE pages SET status='transcribed', transcribed_hash=rm_hash, page_date=?, summary=?, tags=?, transcription_md=?,
       legibility=?, uncertain=?, batch_id=NULL, error=NULL, updated_at=datetime('now') WHERE id=?`)
-      .run(pageDate, result.summary || '', J(canonicalTags(result.tags, r)), result.transcription_md || '', result.legibility || null, J(result.uncertain_spans), pageRow.id);
+      .run(pageDate, result.summary || '', J(pageTags), result.transcription_md || '', result.legibility || null, J(result.uncertain_spans), pageRow.id);
+    // Every tag the page has been read with is kept: a later read that misses a restricted one doesn't unhide it.
+    for (const t of pageTags) db.prepare('INSERT OR IGNORE INTO page_tags (page_id, tag) VALUES (?, ?)').run(pageRow.id, t);
     const prior = priorItemsForPage(pageRow.id);
     const touched = new Set();
     for (const it of same) {
@@ -149,8 +171,8 @@ export async function applyPageResult(pageRow, result, fallbackDate, r = current
     }
 
     // Number-based closes / snoozes. The page names each item it acts on without mentioning it, so the link is kept
-    // in page_closes: a page that closes restricted work is hidden from clients that may not see it.
-    db.prepare('DELETE FROM page_closes WHERE page_id=?').run(pageRow.id);
+    // in page_closes: a page that closes restricted work is hidden from clients that may not see it. Links are only
+    // added: a re-read can't repeat a close (the item is no longer open), and the ink that made it is still there.
     let closed = 0;
     for (const c of result.closes || []) {
       const item = db.prepare('SELECT id, status FROM items WHERE code=?').get(c.code);

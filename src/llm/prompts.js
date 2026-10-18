@@ -139,10 +139,11 @@ ${prior}`,
 }
 
 // ---- Cross-page dedupe (Haiku) -------------------------------------------------------------
-export const DEDUPE_SYSTEM = `You match newly extracted to-do items against an existing open-item list.
-A match means the SAME commitment rewritten (carried forward, reworded, or with a new date) — not merely the same topic
-or the same person. When unsure, do not match. List only the matches: new_ref is the NEW item's label (e.g. "n0"),
-code the OPEN item's number. An empty list is a valid answer.`;
+export const DEDUPE_SYSTEM = `You match newly extracted to-do items against existing items: the open ones, and any already taken from
+the same page, which may be done.
+A match means the SAME commitment rewritten (carried forward, reworded, ticked off, or with a new date) — not merely
+the same topic or the same person. When unsure, do not match. List only the matches: new_ref is the NEW item's label
+(e.g. "n0"), code the OPEN item's number. An empty list is a valid answer.`;
 
 /** Which new items are the same commitment as an existing open item. */
 export const MATCH_SCHEMA = object({

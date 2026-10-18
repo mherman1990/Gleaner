@@ -1,7 +1,7 @@
 // A page's reading is applied all at once, after the one network call it needs (the Haiku dedupe): while that call
-// is out, nothing of the new reading is visible; if it fails, nothing is written and the page is read again next run;
-// and a change made to an item meanwhile (the UI closing it) is not undone by the erase pass. Real SDK, fake API.
-// All content is invented.
+// is out, nothing of the new reading is visible; if it fails, or a write fails partway, nothing is written and the
+// page is read again next run; and a change made to an item meanwhile (the UI closing it) is not undone by the erase
+// pass. Real SDK, fake API. All content is invented.
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -69,4 +69,16 @@ test('an item closed in the UI while the dedupe call is out isn\'t then dropped 
   assert.deepEqual(db.prepare('SELECT status, closed_by FROM items WHERE id=?').get(id), { status: 'done', closed_by: 'ui' });
   assert.deepEqual(db.prepare('SELECT client, field, new FROM events WHERE item_code=(SELECT code FROM items WHERE id=?) AND field=\'status\'').all(id),
     [{ client: 'ui', field: 'status', new: 'done' }]);
+});
+
+test('a write that fails partway through a page leaves nothing of it', async () => {
+  const p = newPage();
+  db.exec(`CREATE TEMP TRIGGER boom BEFORE INSERT ON items WHEN NEW.text LIKE '%BOOM%' BEGIN SELECT RAISE(ABORT, 'boom'); END`);
+  try {
+    await assert.rejects(read(p, [item('Prune the invented rows'), item('Get the MARKER-LUNA lease BOOM', { tags: ['mb'] })],
+      'Prune the invented rows\nGet the MARKER-LUNA lease BOOM #mb', ['orchard']), /boom/);
+  } finally { db.exec('DROP TRIGGER boom'); }
+  assert.deepEqual(page(p.id), { status: 'rendered', transcription_md: null, transcribed_hash: null });
+  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM items WHERE text='Prune the invented rows'`).get().n, 0, 'the first line\'s item is gone too');
+  for (const t of ['item_mentions', 'page_closes', 'page_tags']) assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM ${t} WHERE page_id=?`).get(p.id).n, 0, t);
 });

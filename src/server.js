@@ -45,25 +45,28 @@ export function router() {
       return null;
     }
   };
+  // A read answers from one snapshot of the database: visibility() and the rows it filters are read in one
+  // transaction, so nothing another process (a `docker exec … cli.js ingest`) commits meanwhile can get past it.
+  const get = (route, ...handlers) => r.get(route, ...handlers.slice(0, -1), (req, res) => db.transaction(() => handlers.at(-1)(req, res))());
   const itemByCode = (code, vis) => {
     const item = db.prepare('SELECT * FROM items WHERE code=?').get(Number(code));
     return item && vis.item(item) ? item : null;
   };
 
   // ?status=open (default) | snoozed | closed | all
-  r.get('/items', can('read'), (req, res) => {
+  get('/items', can('read'), (req, res) => {
     const vis = view(req, res);
     if (!vis) return;
+    // ?tag= takes an alias or case variant and finds older items and unregistered tags too. Like the sensitivity
+    // filter, it applies before the list is capped, so a project's older closed items are still found.
+    const want = req.query.tag ? tagKey(canonicalTag(req.query.tag)?.tag) : null;
+    const keep = (i) => vis.item(i) && (want === null || canonicalTags(P(i.tags)).some((t) => tagKey(t) === want));
     let rows;
-    try { rows = listItems(req.query.status || 'open', vis.item); } catch (e) { return res.status(400).json({ error: e.message }); }
-    if (req.query.tag) { // an alias or case variant finds the same items, older ones and unregistered tags included
-      const want = tagKey(canonicalTag(req.query.tag)?.tag);
-      rows = rows.filter((i) => canonicalTags(P(i.tags)).some((t) => tagKey(t) === want));
-    }
-    res.json(rows.filter(vis.item).map((i) => itemJson(i, vis)));
+    try { rows = listItems(req.query.status || 'open', keep); } catch (e) { return res.status(400).json({ error: e.message }); }
+    res.json(rows.map((i) => itemJson(i, vis)));
   });
 
-  r.get('/items/:code', can('read'), (req, res) => {
+  get('/items/:code', can('read'), (req, res) => {
     const vis = view(req, res);
     if (!vis) return;
     const item = itemByCode(req.params.code, vis);
@@ -72,24 +75,31 @@ export function router() {
 
   // By the printed number. Close, reopen, or snooze: {"status":"done"} | {"status":"open"} | {"status":"snoozed","until":"2026-10-23"}.
   // Edit, with or without a status: {"due":"2026-10-23","due_time":"14:00","assignee":"Jen","text":"…"}; null or "" clears.
+  // The check that the client may see the item, the change, and the reply's row happen under one write lock, so an
+  // item another process makes restricted meanwhile is neither changed nor returned.
   r.post('/items/:code', can('write'), (req, res) => {
-    const vis = view(req, res);
-    if (!vis) return;
-    const item = itemByCode(req.params.code, vis);
-    if (!item) return res.status(404).json({ error: 'no such item' });
-    const body = req.body || {};
-    const { status, until, note } = body;
-    const edits = Object.fromEntries(EDITABLE.filter((k) => k in body).map((k) => [k, body[k]]));
-    if (status === undefined && !Object.keys(edits).length) return res.status(400).json({ error: `send a status and/or any of ${EDITABLE.join(', ')}` });
-    if (status !== undefined && !['done', 'dropped', 'open', 'snoozed'].includes(status)) return res.status(400).json({ error: 'status must be done|dropped|open|snoozed' });
-    if (status === 'snoozed' && !isDate(until)) return res.status(400).json({ error: 'snoozed needs until=YYYY-MM-DD' });
-    try { editItem(item.id, edits, req.client.client); } catch (e) { return res.status(400).json({ error: e.message }); }
-    if (status !== undefined) setItemStatus(item.id, status, req.client.client, note || null, status === 'snoozed' ? until : null);
-    refreshItemOutputs([item.id]);
-    res.json(itemJson(db.prepare('SELECT * FROM items WHERE id=?').get(item.id), vis));
+    const changed = db.transaction(() => {
+      const fail = (code, error) => { res.status(code).json({ error }); return null; };
+      const vis = view(req, res);
+      if (!vis) return null;
+      const item = itemByCode(req.params.code, vis);
+      if (!item) return fail(404, 'no such item');
+      const body = req.body || {};
+      const { status, until, note } = body;
+      const edits = Object.fromEntries(EDITABLE.filter((k) => k in body).map((k) => [k, body[k]]));
+      if (status === undefined && !Object.keys(edits).length) return fail(400, `send a status and/or any of ${EDITABLE.join(', ')}`);
+      if (status !== undefined && !['done', 'dropped', 'open', 'snoozed'].includes(status)) return fail(400, 'status must be done|dropped|open|snoozed');
+      if (status === 'snoozed' && !isDate(until)) return fail(400, 'snoozed needs until=YYYY-MM-DD');
+      try { editItem(item.id, edits, req.client.client); } catch (e) { return fail(400, e.message); }
+      if (status !== undefined) setItemStatus(item.id, status, req.client.client, note || null, status === 'snoozed' ? until : null);
+      return { id: item.id, json: itemJson(db.prepare('SELECT * FROM items WHERE id=?').get(item.id), vis) };
+    }).immediate();
+    if (!changed) return;
+    refreshItemOutputs([changed.id]);
+    res.json(changed.json);
   });
 
-  r.get('/open-loops.md', can('read'), (req, res) => {
+  get('/open-loops.md', can('read'), (req, res) => {
     const vis = view(req, res);
     if (vis) res.type('text/markdown').send(renderOpenLoops(vis));
   });
@@ -114,7 +124,7 @@ export function router() {
   };
 
   // /notes?from=2026-10-12&to=2026-10-16  (defaults: last 3 days) → concatenated markdown
-  r.get('/notes', can('read'), (req, res) => {
+  get('/notes', can('read'), (req, res) => {
     const to = req.query.to || localDate();
     const from = req.query.from || (isDate(to) ? addDays(to, -2) : to);
     if (!isDate(from) || !isDate(to)) return res.status(400).json({ error: 'from/to must be YYYY-MM-DD' });
@@ -129,7 +139,7 @@ export function router() {
     res.type('text/markdown').send(parts.join('\n\n---\n\n') || `no notes ${from}..${to}`);
   });
 
-  r.get('/notes/:date', can('read'), (req, res) => {
+  get('/notes/:date', can('read'), (req, res) => {
     if (!isDate(req.params.date)) return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
     const vis = view(req, res);
     if (!vis) return;
@@ -137,7 +147,7 @@ export function router() {
     md ? res.type('text/markdown').send(md) : res.status(404).send('none');
   });
 
-  r.get('/search', can('read'), (req, res) => {
+  get('/search', can('read'), (req, res) => {
     const vis = view(req, res);
     if (!vis) return;
     const q = `%${req.query.q || ''}%`;
@@ -148,7 +158,7 @@ export function router() {
 
   // ?since=today | YYYY-MM-DD | ISO time (default: the last 24 hours) &client=mayer &after=<event id>
   // At most 1,000 events, oldest first. X-More: true means there are more: ask again with after=<the last id>.
-  r.get('/events', can('read'), (req, res) => {
+  get('/events', can('read'), (req, res) => {
     const since = parseSince(req.query.since);
     if (!since) return res.status(400).json({ error: 'since must be "today", YYYY-MM-DD, or an ISO time' });
     const { client, after } = req.query;
@@ -174,7 +184,7 @@ export function router() {
 
   // Run details and page counts can describe restricted pages, so sensitivity normal gets counts of what it may see
   // and runs without their details.
-  r.get('/status', can('read'), (req, res) => {
+  get('/status', can('read'), (req, res) => {
     const vis = view(req, res);
     if (!vis) return;
     const runs = db.prepare('SELECT kind, started_at, ended_at, ok, substr(detail,1,300) AS detail FROM runs ORDER BY id DESC LIMIT 10').all();

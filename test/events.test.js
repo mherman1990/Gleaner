@@ -15,7 +15,7 @@ const dataDir = tempEnv('events', { GLEANER_PORT: '0', GLEANER_API_TOKEN: 'legac
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 fs.copyFileSync(path.join(ROOT, 'test', 'fixtures', 'registry.yaml'), path.join(dataDir, 'projects.yaml'));
 
-const { db, setItemStatus, startRun, endRun, recordEvent } = await import('../src/db.js');
+const { db, setItemStatus, editItem, startRun, endRun, recordEvent } = await import('../src/db.js');
 const { applyPageResult } = await import('../src/pipeline/ledger.js');
 const { router, startServer } = await import('../src/server.js');
 const { addToken } = await import('../src/auth.js');
@@ -120,16 +120,31 @@ test('every route that can change an item is exercised above', () => {
   assert.deepEqual(posts.filter((p) => !['/items/:code', '/ingest', '/digest'].includes(p)), [], 'a new mutating route needs an events test');
 });
 
-test('a change made while another process is writing waits for it instead of failing', async () => {
-  // Another process (a `docker exec … cli.js`) takes the write lock, changes an item, and commits 300 ms later.
-  const code = codeOf('Print the seating chart');
+/**
+ * Another process (a `docker exec … cli.js`) takes the write lock and runs `sql`. It commits 200 ms after go() is
+ * called, so a call made right after go() is sure to find the lock held, however slowly either process started.
+ */
+async function otherProcessWriting(sql, ...args) {
+  const go = path.join(dataDir, `go-${process.hrtime.bigint()}`);
   const child = spawn(process.execPath, ['-e', `
+    const fs = require('fs');
+    const nap = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
     const db = new (require('better-sqlite3'))(${JSON.stringify(path.join(dataDir, 'gleaner.db'))});
-    db.exec('BEGIN IMMEDIATE'); db.prepare('UPDATE items SET priority=1 WHERE code=?').run(${code});
-    console.log('locked'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300); db.exec('COMMIT');`], { cwd: ROOT });
-  await new Promise((r) => child.stdout.once('data', r));
+    db.exec('BEGIN IMMEDIATE'); db.prepare(${JSON.stringify(sql)}).run(...${JSON.stringify(args)});
+    console.log('locked');
+    for (const end = Date.now() + 20000; !fs.existsSync(${JSON.stringify(go)}) && Date.now() < end;) nap(5);
+    nap(200); db.exec('COMMIT');`], { cwd: ROOT });
+  const done = new Promise((r) => child.on('close', r));
+  await Promise.race([new Promise((r) => child.stdout.once('data', r)), done.then((c) => { throw new Error(`the other process exited (${c})`); })]);
+  return { go: () => fs.writeFileSync(go, ''), done };
+}
+
+test('a change made while another process is writing waits for it instead of failing', async () => {
+  const code = codeOf('Print the seating chart');
+  const other = await otherProcessWriting('UPDATE items SET priority=1 WHERE code=?', code);
+  other.go();
   setItemStatus(idOf(code), 'snoozed', 'cli', null, '2999-03-01'); // reads the item, then writes it
-  await new Promise((r) => child.on('close', r));
+  await other.done;
   assert.deepEqual(db.prepare('SELECT status, priority FROM items WHERE code=?').get(code), { status: 'snoozed', priority: 1 });
 });
 
@@ -138,26 +153,33 @@ test('a status change decides on the item as it is once the other process is don
   // no-op on the row as it will be, so the first close's client and words stay.
   await read(await newPage(), '2026-10-18', [item('Water the office plant')]);
   const code = codeOf('Water the office plant');
-  const child = spawn(process.execPath, ['-e', `
-    const db = new (require('better-sqlite3'))(${JSON.stringify(path.join(dataDir, 'gleaner.db'))});
-    db.exec('BEGIN IMMEDIATE');
-    db.prepare("UPDATE items SET status='done', closed_by='handwriting', close_evidence='✓', closed_at=? WHERE code=?").run(new Date().toISOString(), ${code});
-    console.log('locked'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300); db.exec('COMMIT');`], { cwd: ROOT });
-  await new Promise((r) => child.stdout.once('data', r));
+  const other = await otherProcessWriting(`UPDATE items SET status='done', closed_by='handwriting', close_evidence='✓', closed_at=? WHERE code=?`,
+    new Date().toISOString(), code);
+  other.go();
   assert.equal(setItemStatus(idOf(code), 'done', 'cli'), 0);
-  await new Promise((r) => child.on('close', r));
+  await other.done;
   assert.deepEqual(db.prepare('SELECT closed_by, close_evidence FROM items WHERE code=?').get(code), { closed_by: 'handwriting', close_evidence: '✓' });
+});
+
+test('a hand edit decides on the item as it is once the other process is done', async () => {
+  // Another process sets the due date by hand; the CLI then assigns the item. Both stay marked as hand edits, so a
+  // re-read of the page overwrites neither.
+  await read(await newPage(), '2026-10-18', [item('Sweep the loading dock')]);
+  const code = codeOf('Sweep the loading dock');
+  const other = await otherProcessWriting(`UPDATE items SET due='2026-10-30', edited='["due"]' WHERE code=?`, code);
+  other.go();
+  editItem(idOf(code), { assignee: 'Sam' }, 'cli');
+  await other.done;
+  assert.deepEqual(db.prepare('SELECT due, assignee, edited FROM items WHERE code=?').get(code),
+    { due: '2026-10-30', assignee: 'Sam Fixture', edited: '["due","assignee"]' });
 });
 
 test('a page applied while another process is writing waits for it instead of failing', async () => {
   const p = await newPage();
-  const child = spawn(process.execPath, ['-e', `
-    const db = new (require('better-sqlite3'))(${JSON.stringify(path.join(dataDir, 'gleaner.db'))});
-    db.exec('BEGIN IMMEDIATE'); db.prepare("UPDATE runs SET ok=ok WHERE 0").run();
-    console.log('locked'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300); db.exec('COMMIT');`], { cwd: ROOT });
-  await new Promise((r) => child.stdout.once('data', r));
+  const other = await otherProcessWriting('UPDATE runs SET ok=ok WHERE 0');
+  other.go();
   await read(p, '2026-10-18', [item('Label the shelf bins')]);
-  await new Promise((r) => child.on('close', r));
+  await other.done;
   assert.deepEqual(events('item_code=?', codeOf('Label the shelf bins')).map((e) => e.field), ['created']);
 });
 
@@ -173,7 +195,9 @@ test('/api/events: since today, a date or an ISO time; by client; bad input is a
   assert.ok(byMayer.length && byMayer.every((e) => e.client === 'mayer'));
   const count = (iso) => db.prepare('SELECT COUNT(*) AS n FROM events WHERE at >= ?').get(iso).n;
   assert.equal((await (await call('/api/events?since=today', mayer)).json()).length, count(parseSince('today')));
-  assert.equal((await (await call('/api/events?since=2999-01-01T00:00:00Z', mayer)).json()).length, 0);
+  for (const late of ['2999-01-01T00:00:00Z', '9999-12-31', '9999-12-31T23:00:00-05:00', '9999-12-31T24:00:00Z']) {
+    assert.equal((await (await call(`/api/events?since=${encodeURIComponent(late)}`, mayer)).json()).length, 0, late);
+  }
   assert.equal((await (await call('/api/events', mayer)).json()).length, count(new Date(Date.now() - 24 * 3600e3).toISOString()), 'default: the last 24 hours');
   for (const bad of ['yesterday', '10/18/2026', '2026-13-40', '2026-02-30', '2026-02-30T00:00:00Z', '2026-10-18Tnoon']) assert.equal((await call(`/api/events?since=${bad}`, mayer)).status, 400, bad);
   assert.equal((await (await call('/api/events?since=0001-01-01', mayer)).json()).length, all.length, 'before 1970 means from the start');

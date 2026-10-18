@@ -58,6 +58,33 @@ test('a v0.1.4 database takes every migration in place and keeps its rows', () =
   v014.close();
 });
 
+// Pages read before migration 003 have no page_closes or page_tags rows. It fills both from what's stored, so the
+// sensitivity filter can hide a page that closed restricted work, or was tagged restricted, before the upgrade.
+test('pages read before the upgrade are linked to the items their text closes, and keep their tags', () => {
+  const v014 = new Database(':memory:');
+  v014.exec(fs.readFileSync(new URL('./fixtures/v0.1.4.sql', import.meta.url), 'utf8'));
+  const item = v014.prepare(`INSERT INTO items (id, code, text, kind, tags, status, snooze_until, closed_by, close_evidence)
+    VALUES (?, ?, ?, 'action', '[]', ?, ?, ?, ?)`);
+  item.run('it_c', 3, 'Get the fixture quote', 'done', null, 'handwriting', '✓3');
+  item.run('it_d', 4, 'Sign the fixture form', 'done', null, 'handwriting', '☑ Sign the fixture form');
+  item.run('it_e', 5, 'Call the fixture lab', 'snoozed', '2026-10-23', null, null);
+  item.run('it_f', 6, 'Order the fixture parts', 'dropped', null, 'handwriting', 'x6');
+  item.run('it_g', 7, 'Book the fixture room', 'done', null, 'handwriting', 'marked on source page');
+  item.run('it_h', 8, 'Paint the fixture shed', 'done', null, 'handwriting', '8 ✓');
+  const page = v014.prepare(`INSERT INTO pages (id, doc_id, page_index, status, page_date, tags, transcription_md)
+    VALUES (?, 'doc-todo', ?, 'transcribed', '2026-10-17', ?, ?)`);
+  page.run('pg-a', 1, '["orchard"]', 'Quote: ✓3 came in at 4M');
+  page.run('pg-b', 2, 'not json', '- ☑ Sign the fixture form\n- marked on source page');
+  page.run('pg-c', 3, '[]', 'snooze 5 Fri\nx6, not needed\npaint shed 8 ✓ and 14 → Mon');
+  page.run('pg-d', 4, '[]', 'Met 6 people, 3 said yes; box14 and Q3 → Q4 2x4 boards');
+  migrate(v014);
+  assert.deepEqual(v014.prepare('SELECT page_id, item_id FROM page_closes ORDER BY page_id, item_id').all().map((r) => `${r.page_id}:${r.item_id}`),
+    ['pg-a:it_c', 'pg-b:it_d', 'pg-c:it_e', 'pg-c:it_f', 'pg-c:it_h'], 'no link from prose, or from the words Gleaner writes itself');
+  assert.deepEqual(v014.prepare('SELECT page_id, tag FROM page_tags ORDER BY page_id, tag').all().map((r) => `${r.page_id}:${r.tag}`),
+    ['pg-1:45Z', 'pg-1:widget-permits', 'pg-a:orchard']);
+  v014.close();
+});
+
 // The service and a `docker exec … cli.js` starting on a new release: one process migrates between the other's
 // check and its write lock. The second must re-check under the lock and apply nothing, not fail or apply twice.
 test('two processes migrating one database at once apply each migration once', () => {

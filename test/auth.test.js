@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { tempEnv } from './helpers.js';
 
 const dataDir = tempEnv('auth', { GLEANER_PORT: '0', GLEANER_API_TOKEN: 'legacy-secret' });
@@ -109,19 +109,22 @@ test('a token added or revoked by another process takes effect without a restart
 test('a token command waits for another one\'s lock, and stops at a lock left by one that was interrupted', async () => {
   const lock = `${tokensFile}.lock`;
   fs.writeFileSync(lock, '');
-  const started = Date.now();
-  let released = 0;
-  setTimeout(() => { released = Date.now(); fs.rmSync(lock, { force: true }); }, 400);
+  // The child says when it finds the lock taken (test/fakes/lock-spy.js), and only then is the lock released.
   const run = await new Promise((resolve) => {
-    const child = spawn(process.execPath, [path.join(ROOT, 'src', 'cli.js'), 'token', 'add', 'waiter', '--scopes', 'read'],
-      { env: { ...process.env, GLEANER_DATA_DIR: dataDir } });
-    child.on('close', (status) => resolve({ status, at: Date.now() }));
+    const child = spawn(process.execPath, ['--import', pathToFileURL(path.join(ROOT, 'test', 'fakes', 'lock-spy.js')).href,
+      path.join(ROOT, 'src', 'cli.js'), 'token', 'add', 'waiter', '--scopes', 'read'], { env: { ...process.env, GLEANER_DATA_DIR: dataDir } });
+    let waited = false;
+    child.stderr.on('data', (d) => { if (!waited && /waiting/.test(d)) { waited = true; fs.rmSync(lock, { force: true }); } });
+    child.on('close', (status) => resolve({ status, waited }));
   });
-  assert.equal(run.status, 0);
-  assert.ok(released && run.at >= released && released - started >= 400, 'it waited for the lock to go');
+  assert.ok(run.waited, 'it found the lock taken');
+  assert.equal(run.status, 0, 'and waited for it to go');
   assert.ok(auth.tokenStatus().clients.some((c) => c.client === 'waiter'));
-  // A lock nobody releases: the command gives up and says what to do, rather than guess it's safe to take over.
+  // A lock nobody releases, however old: the command gives up and says what to do, rather than guess it's safe to
+  // take over.
   fs.writeFileSync(lock, 'someone else');
+  const hourAgo = new Date(Date.now() - 3600e3);
+  fs.utimesSync(lock, hourAgo, hourAgo);
   auth.LOCK_WAIT.ms = 200;
   try {
     assert.throws(() => auth.addToken('after-stuck-lock', { scopes: 'read' }), /interrupted\. If none is running, delete that file/);
@@ -131,10 +134,20 @@ test('a token command waits for another one\'s lock, and stops at a lock left by
   assert.equal(fs.existsSync(lock), false, 'its own lock is released');
 });
 
+test('a token command removes only its own lock, not one that took its place', () => {
+  const lock = `${tokensFile}.lock`;
+  const rename = fs.renameSync; // the command's save; the lock is replaced while it holds it (a hand-deleted lock, retaken)
+  fs.renameSync = (...args) => { fs.writeFileSync(lock, 'another command'); return rename(...args); };
+  try { auth.addToken('owner-check', { scopes: 'read' }); } finally { fs.renameSync = rename; }
+  try {
+    assert.equal(fs.readFileSync(lock, 'utf8'), 'another command');
+  } finally { fs.rmSync(lock, { force: true }); }
+});
+
 test('a long run of spaces in the header can\'t stall the server (linear parsing)', () => {
   const started = process.hrtime.bigint();
-  assert.equal(auth.authenticate(`Bearer x${' '.repeat(15500)}y`), null);
-  assert.ok(Number(process.hrtime.bigint() - started) / 1e6 < 20, 'well under the quadratic regex\'s ~100 ms');
+  assert.equal(auth.authenticate(`Bearer x${' '.repeat(40000)}y`), null);
+  assert.ok(Number(process.hrtime.bigint() - started) / 1e6 < 50, 'well under the quadratic regex\'s ~100 ms');
   assert.equal(auth.authenticate('Bearer'), null);
   assert.equal(auth.authenticate('Bearer    '), null);
 });

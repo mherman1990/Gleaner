@@ -15,8 +15,8 @@ export function localMidnight(date) {
 
 /**
  * since: "today" (local midnight), a YYYY-MM-DD date (its local midnight), or an ISO time. Absent: 24 hours ago.
- * Anything before 1970 means "from the start". Returns an ISO string, or null when it can't be read (an impossible
- * date included: 2026-02-30 is an error, not March 2nd).
+ * Anything before 1970 means "from the start", and anything past 9999 (in UTC) "nothing yet". Returns an ISO string,
+ * or null when it can't be read (an impossible date included: 2026-02-30 is an error, not March 2nd).
  */
 export function parseSince(since, at = new Date()) {
   if (since === undefined || since === '') return new Date(at.getTime() - 24 * 3600e3).toISOString();
@@ -25,7 +25,9 @@ export function parseSince(since, at = new Date()) {
   if (!/^\d{4}-\d{2}-\d{2}(T.*)?$/.test(s) || !isDate(s.slice(0, 10))) return null;
   if (s.slice(0, 10) < '1970-01-02') return new Date(0).toISOString();
   if (s.length === 10) return localMidnight(s).toISOString();
-  return Number.isNaN(Date.parse(s)) ? null : new Date(s).toISOString();
+  if (Number.isNaN(Date.parse(s))) return null;
+  const iso = new Date(s).toISOString();
+  return iso.startsWith('+') ? '9999-12-31T23:59:59.999Z' : iso; // "+010000-…" sorts before every stored time
 }
 
 /**
