@@ -11,10 +11,12 @@ export const ALL = Object.freeze({ all: true, page: () => true, item: () => true
 
 /**
  * What a client with this sensitivity may see, judged now against the current registry.
- * - A restricted item has a restricted project among its tags, or is mentioned on a page that has one. Aliases and
- *   case variants count, so tags stored before the registry existed are caught too.
- * - A page is hidden whole if it has a restricted tag, or if a restricted item is mentioned on it: its transcription
- *   holds that item's line (an item tagged #mb on a widget page, or one carried over from a restricted page).
+ * - A restricted item has, or ever had, a restricted project among its tags (the events keep its tag history, so a
+ *   later read without the tag doesn't clear it), or is mentioned on a page that has one. Aliases and case variants
+ *   count, so tags stored before the registry existed are caught too.
+ * - A page is hidden whole if it has a restricted tag, or if it mentions, closes or snoozes a restricted item: its
+ *   text holds that item's line or names it (an item tagged #mb on a widget page, one carried over from a restricted
+ *   page, or "☑ <its line>").
  * - An item is hidden if it's restricted. Other items on a page hidden for its neighbour stay visible.
  * With no registry nothing can be judged, so "normal" throws NoRegistryError and the caller answers 503: a typo in
  * projects.yaml must never open restricted work up.
@@ -27,15 +29,19 @@ export function visibility(sensitivity, r = currentRegistry()) {
 
   const restrictedPages = new Set(db.prepare('SELECT id, tags FROM pages').all().filter((p) => restrictedTags(p.tags)).map((p) => p.id));
   const mentions = db.prepare('SELECT item_id, page_id FROM item_mentions').all();
+  const hadRestrictedTag = new Set(db.prepare(`SELECT item_code, old, new FROM events WHERE field='tags'`).all()
+    .filter((e) => restrictedTags(e.old) || restrictedTags(e.new)).map((e) => e.item_code));
   const hiddenItems = new Set();
   for (const m of mentions) if (restrictedPages.has(m.page_id)) hiddenItems.add(m.item_id);
   const hiddenCodes = new Set();
   for (const i of db.prepare('SELECT id, code, tags FROM items').all()) {
-    if (restrictedTags(i.tags)) hiddenItems.add(i.id);
+    if (restrictedTags(i.tags) || hadRestrictedTag.has(i.code)) hiddenItems.add(i.id);
     if (hiddenItems.has(i.id)) hiddenCodes.add(i.code);
   }
   const hiddenPages = new Set(restrictedPages);
-  for (const m of mentions) if (hiddenItems.has(m.item_id)) hiddenPages.add(m.page_id);
+  for (const m of [...mentions, ...db.prepare('SELECT item_id, page_id FROM page_closes').all()]) {
+    if (hiddenItems.has(m.item_id)) hiddenPages.add(m.page_id);
+  }
   return {
     all: false,
     page: (p) => !hiddenPages.has(p.id),

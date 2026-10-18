@@ -57,9 +57,11 @@ export const apiEnabled = () => tokens().length > 0 || !!config.server.apiToken;
  * case-insensitive, and everything after it is the token, so a legacy token with a space in it still works.
  */
 export function authenticate(header) {
-  const m = /^Bearer[ \t]+(.+?)[ \t]*$/i.exec(String(header || ''));
-  if (!m) return null;
-  const given = Buffer.from(hashOf(m[1]), 'hex');
+  const h = String(header || '');
+  const scheme = /^Bearer[ \t]+/i.exec(h); // anchored, no backtracking capture: linear on any header
+  const token = scheme ? h.slice(scheme[0].length).trimEnd() : '';
+  if (!token) return null;
+  const given = Buffer.from(hashOf(token), 'hex');
   let found = null;
   for (const t of tokens()) {
     if (crypto.timingSafeEqual(given, Buffer.from(t.hash, 'hex')) && !found) found = t;
@@ -81,24 +83,31 @@ function save(list) {
   } finally { fs.rmSync(tmp, { force: true }); }
 }
 
-/** Run fn holding tokens.json.lock, so two `token` commands at once can't lose each other's change. */
+/**
+ * Run fn holding tokens.json.lock, so two `token` commands at once can't lose each other's change. A token command
+ * takes milliseconds, so after 5 s of waiting it gives up and says so. A lock left by an interrupted command is not
+ * cleared automatically (two waiters could both clear it and both write); the error says to delete it.
+ */
+export const LOCK_WAIT = { ms: 5000 }; // tests shorten it
 function withLock(fn) {
   const lock = `${config.auth.tokensPath}.lock`;
+  const mine = `${process.pid}:${crypto.randomBytes(8).toString('hex')}`;
   fs.mkdirSync(path.dirname(lock), { recursive: true });
-  for (const end = Date.now() + 5000; ;) {
-    try { fs.closeSync(fs.openSync(lock, 'wx', 0o600)); break; } catch (e) {
+  for (const end = Date.now() + LOCK_WAIT.ms; ;) {
+    try { fs.writeFileSync(lock, mine, { flag: 'wx', mode: 0o600 }); break; } catch (e) {
       if (e.code !== 'EEXIST') throw e;
-      let age = 0;
-      try { age = Date.now() - fs.statSync(lock).mtimeMs; } catch { continue; } // just released
-      if (age > 10000) { fs.rmSync(lock, { force: true }); continue; } // left by a process that died
-      if (Date.now() > end) throw new Error(`${lock} is held by another token command; try again`);
+      if (Date.now() > end) {
+        throw new Error(`${lock} exists: another token command is running, or one was interrupted. If none is running, delete that file and try again.`);
+      }
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
     }
   }
   try {
     cache.stamp = null; // read the file as it is now, not as this process last saw it
     return fn();
-  } finally { fs.rmSync(lock, { force: true }); }
+  } finally {
+    try { if (fs.readFileSync(lock, 'utf8') === mine) fs.rmSync(lock); } catch { /* already gone */ }
+  }
 }
 
 function current() {

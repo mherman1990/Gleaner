@@ -133,6 +133,34 @@ test('a change made while another process is writing waits for it instead of fai
   assert.deepEqual(db.prepare('SELECT status, priority FROM items WHERE code=?').get(code), { status: 'snoozed', priority: 1 });
 });
 
+test('a status change decides on the item as it is once the other process is done', async () => {
+  // Another process closes the item by handwriting and holds the lock; the CLI then asks to close it too. That's a
+  // no-op on the row as it will be, so the first close's client and words stay.
+  await read(await newPage(), '2026-10-18', [item('Water the office plant')]);
+  const code = codeOf('Water the office plant');
+  const child = spawn(process.execPath, ['-e', `
+    const db = new (require('better-sqlite3'))(${JSON.stringify(path.join(dataDir, 'gleaner.db'))});
+    db.exec('BEGIN IMMEDIATE');
+    db.prepare("UPDATE items SET status='done', closed_by='handwriting', close_evidence='✓', closed_at=? WHERE code=?").run(new Date().toISOString(), ${code});
+    console.log('locked'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300); db.exec('COMMIT');`], { cwd: ROOT });
+  await new Promise((r) => child.stdout.once('data', r));
+  assert.equal(setItemStatus(idOf(code), 'done', 'cli'), 0);
+  await new Promise((r) => child.on('close', r));
+  assert.deepEqual(db.prepare('SELECT closed_by, close_evidence FROM items WHERE code=?').get(code), { closed_by: 'handwriting', close_evidence: '✓' });
+});
+
+test('a page applied while another process is writing waits for it instead of failing', async () => {
+  const p = await newPage();
+  const child = spawn(process.execPath, ['-e', `
+    const db = new (require('better-sqlite3'))(${JSON.stringify(path.join(dataDir, 'gleaner.db'))});
+    db.exec('BEGIN IMMEDIATE'); db.prepare("UPDATE runs SET ok=ok WHERE 0").run();
+    console.log('locked'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300); db.exec('COMMIT');`], { cwd: ROOT });
+  await new Promise((r) => child.stdout.once('data', r));
+  await read(p, '2026-10-18', [item('Label the shelf bins')]);
+  await new Promise((r) => child.on('close', r));
+  assert.deepEqual(events('item_code=?', codeOf('Label the shelf bins')).map((e) => e.field), ['created']);
+});
+
 test('a change needs a client to attribute it to', () => {
   assert.throws(() => setItemStatus(idOf(1), 'done', ''), /client/);
 });
@@ -147,7 +175,8 @@ test('/api/events: since today, a date or an ISO time; by client; bad input is a
   assert.equal((await (await call('/api/events?since=today', mayer)).json()).length, count(parseSince('today')));
   assert.equal((await (await call('/api/events?since=2999-01-01T00:00:00Z', mayer)).json()).length, 0);
   assert.equal((await (await call('/api/events', mayer)).json()).length, count(new Date(Date.now() - 24 * 3600e3).toISOString()), 'default: the last 24 hours');
-  for (const bad of ['yesterday', '10/18/2026', '2026-13-40', '2026-02-30', '2026-10-18Tnoon']) assert.equal((await call(`/api/events?since=${bad}`, mayer)).status, 400, bad);
+  for (const bad of ['yesterday', '10/18/2026', '2026-13-40', '2026-02-30', '2026-02-30T00:00:00Z', '2026-10-18Tnoon']) assert.equal((await call(`/api/events?since=${bad}`, mayer)).status, 400, bad);
+  assert.equal((await (await call('/api/events?since=0001-01-01', mayer)).json()).length, all.length, 'before 1970 means from the start');
   assert.equal((await call('/api/events?client=mayer&client=ui', mayer)).status, 400, 'one client at a time');
   assert.equal((await call('/api/events?after=x', mayer)).status, 400);
   assert.equal(parseSince('2026-10-18'), localMidnight('2026-10-18').toISOString());

@@ -15,31 +15,28 @@ export function localMidnight(date) {
 
 /**
  * since: "today" (local midnight), a YYYY-MM-DD date (its local midnight), or an ISO time. Absent: 24 hours ago.
- * Returns an ISO string, or null when it can't be read.
+ * Anything before 1970 means "from the start". Returns an ISO string, or null when it can't be read (an impossible
+ * date included: 2026-02-30 is an error, not March 2nd).
  */
 export function parseSince(since, at = new Date()) {
   if (since === undefined || since === '') return new Date(at.getTime() - 24 * 3600e3).toISOString();
   const s = String(since).trim();
   if (s === 'today') return localMidnight(new Intl.DateTimeFormat('en-CA', { timeZone: config.timezone }).format(at)).toISOString();
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return isDate(s) ? localMidnight(s).toISOString() : null;
-  if (!/^\d{4}-\d{2}-\d{2}T/.test(s) || Number.isNaN(Date.parse(s))) return null;
-  return new Date(s).toISOString();
+  if (!/^\d{4}-\d{2}-\d{2}(T.*)?$/.test(s) || !isDate(s.slice(0, 10))) return null;
+  if (s.slice(0, 10) < '1970-01-02') return new Date(0).toISOString();
+  if (s.length === 10) return localMidnight(s).toISOString();
+  return Number.isNaN(Date.parse(s)) ? null : new Date(s).toISOString();
 }
 
 /**
  * Events since an ISO time and after an event id, oldest first, at most `limit`; optionally one client's. Returns
  * { events, more }: when more is true, ask again with after = the last event's id. `vis` (src/sensitivity.js) drops
- * events of items the client may not see, and every event of an item whose tags ever included a restricted project,
- * so a tag change can't reveal one.
+ * events of items the client may not see; an item whose tags ever included a restricted project is one of them.
  */
 export function listEvents({ since, client, after = 0, limit = 1000 }, vis) {
   let rows = db.prepare(`SELECT id, at, client, item_code, field, old, new FROM events WHERE at >= ? AND id > ?
     ${client ? 'AND client = ?' : ''} ORDER BY id`).all(...[since, after, client].filter((v) => v !== undefined && v !== null && v !== ''));
-  if (!vis.all) {
-    const everRestricted = new Set(db.prepare(`SELECT item_code, old, new FROM events WHERE field='tags'`).all()
-      .filter((e) => vis.restrictedTags(e.old) || vis.restrictedTags(e.new)).map((e) => e.item_code));
-    rows = rows.filter((e) => e.item_code !== null && vis.code(e.item_code) && !everRestricted.has(e.item_code));
-  }
+  if (!vis.all) rows = rows.filter((e) => e.item_code !== null && vis.code(e.item_code));
   return { events: rows.slice(0, limit), more: rows.length > limit };
 }
 

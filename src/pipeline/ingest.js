@@ -100,7 +100,12 @@ async function applyAll(rows, results, registry) {
       db.prepare(`UPDATE pages SET status='error', error=?, batch_id=NULL WHERE id=?`).run(r?.error || 'no result', row.id);
       tally.failed++; continue;
     }
-    const s = await applyPageResult(row, r.input, pageContext(row).dateHint, registry);
+    let s;
+    try { s = await applyPageResult(row, r.input, pageContext(row).dateHint, registry); } catch (e) {
+      // Nothing of the page was written (see applyPageResult); it's read again next run.
+      db.prepare(`UPDATE pages SET status='error', error=?, batch_id=NULL WHERE id=?`).run(`applying: ${e.message}`, row.id);
+      tally.failed++; continue;
+    }
     dates.add(s.pageDate); if (s.prevDate) dates.add(s.prevDate);
     s.itemIds.forEach((id) => itemIds.add(id));
     tally.created += s.created; tally.carried += s.carried; tally.closed += s.closed;

@@ -46,7 +46,7 @@ const lines = (title, items) => [title, ...items.map((i) => `- ☐ ${i.text}${i.
 
 // Restricted: a page tagged moonbase and its items.
 const moonItems = [{ text: 'Order regolith samples MARKER-LUNA-A' }, { text: 'Confirm MARKER-LUNA-C launch window' },
-  { text: 'Close the MARKER-LUNA-CLOSED file' }, { text: 'Revisit MARKER-LUNA-SNOOZED later' }];
+  { text: 'Close the MARKER-LUNA-CLOSED file' }, { text: 'Revisit MARKER-LUNA-SNOOZED later' }, { text: 'Sign the MARKER-LUNA-BOX form' }];
 await page('2026-10-14', ['moonbase'], lines('MARKER-LUNA-PAGE crater survey', moonItems), moonItems);
 // A normal page holding a line carried over from that page: hidden whole, though its other items stay visible. One of
 // them was tagged moonbase at first and isn't any more.
@@ -68,12 +68,20 @@ db.prepare(`UPDATE pages SET tags='["Lunar"]', transcription_md='MARKER-LUNA-P4 
 const permit = code('Call about the permit');
 await page('2026-10-18', ['moonbase'], `MARKER-LUNA-CLOSER ✓${permit} sent to the review board`, [],
   [{ code: permit, action: 'done', snooze_until: null, evidence: `✓${permit} MARKER-LUNA-EVIDENCE sent to the review board` }]);
+// Normal pages that hold restricted work without a restricted tag of their own: a line tagged #mb, the same line
+// carried forward a day later without the tag (the item stays restricted, and so do both pages), and a ticked box
+// that closes a restricted item by its line.
+const lease = [{ text: 'Get the MARKER-LUNA-L lease term sheet', tags: ['mb'], mark: ' #mb' }];
+await page('2026-10-19', ['widget-report'], lines('Lease notes', lease), lease);
+await page('2026-10-20', ['widget-report'], lines('Lease follow-up', [{ text: lease[0].text }]), [{ text: lease[0].text }]);
+const box = code('Sign the MARKER-LUNA-BOX form');
+await page('2026-10-20', ['orchard'], '☑ Sign the MARKER-LUNA-BOX form', [], [{ code: box, action: 'done', snooze_until: null, evidence: '☑' }]);
 
 setItemStatus(idOf('Close the MARKER-LUNA-CLOSED file'), 'done', 'mayer');
 setItemStatus(idOf('Revisit MARKER-LUNA-SNOOZED later'), 'snoozed', 'mayer', null, '2999-01-01');
 setItemStatus(idOf('Send the widget draft'), 'done', 'mayer');
 endRun(startRun('ingest:sync'), true, { note: 'MARKER-LUNA-RUN moonbase' });
-writeDayFiles(['2026-10-14', '2026-10-15', '2026-10-16', '2026-10-17', '2026-10-18']);
+writeDayFiles(['2026-10-14', '2026-10-15', '2026-10-16', '2026-10-17', '2026-10-18', '2026-10-19', '2026-10-20']);
 writeOpenLoops();
 fs.writeFileSync(path.join(paths.out, 'digest-latest.md'), '# Today\n- #1 Order regolith samples MARKER-LUNA-A');
 
@@ -121,13 +129,13 @@ test('the same requests with an "all" token do reach every piece of restricted c
   let all = '';
   for (const url of Object.values(PROBES).flat()) all += await (await call(url, mayer)).text();
   for (const m of ['MARKER-LUNA-PAGE', 'MARKER-LUNA-A', 'MARKER-LUNA-C', 'MARKER-LUNA-CLOSED', 'MARKER-LUNA-SNOOZED', 'MARKER-LUNA-D',
-    'MARKER-LUNA-P4', 'MARKER-LUNA-CLOSER', 'MARKER-LUNA-EVIDENCE', 'MARKER-LUNA-RUN', 'moonbase']) assert.ok(all.includes(m), `the fixture reaches ${m}`);
+    'MARKER-LUNA-P4', 'MARKER-LUNA-CLOSER', 'MARKER-LUNA-EVIDENCE', 'MARKER-LUNA-L', 'MARKER-LUNA-BOX', 'MARKER-LUNA-RUN', 'moonbase']) assert.ok(all.includes(m), `the fixture reaches ${m}`);
 });
 
 test('normal sensitivity still gets everything else', async () => {
   const items = await (await call('/api/items?status=all', notebook)).json();
-  assert.deepEqual(items.map((i) => i.text).sort(),
-    ['Book the review room', 'Call about the permit', 'File the gizmo numbers', 'Prune the orchard rows', 'Send the widget draft']);
+  assert.deepEqual(items.map((i) => i.text).sort(), ['Call about the permit', 'File the gizmo numbers', 'Prune the orchard rows', 'Send the widget draft'],
+    'not "Book the review room": once tagged moonbase, it stays restricted after a re-read without the tag');
   const closed = items.find((i) => i.code === permit);
   assert.deepEqual([closed.status, closed.closed_by, closed.close_evidence], ['done', 'handwriting', null], 'closed, without the restricted page\'s words');
   assert.match(await (await call('/api/notes/2026-10-17', notebook)).text(), /Permit call/);
@@ -136,10 +144,11 @@ test('normal sensitivity still gets everything else', async () => {
   assert.equal((await call(`/api/items/${code('Order regolith samples MARKER-LUNA-A')}`, notebook)).status, 404);
   assert.equal((await call('/api/digest/today', notebook)).status, 403);
   const status = await (await call('/api/status', notebook)).json();
-  assert.equal(status.pages.reduce((s, p) => s + p.n, 0), 2, 'counts leave out the five hidden pages of seven');
+  assert.equal(status.pages.reduce((s, p) => s + p.n, 0), 2, 'counts leave out the eight hidden pages of ten');
+  assert.equal(db.prepare(`SELECT tags FROM items WHERE text=?`).get(lease[0].text).tags, '[]', 'the carry did clear the item\'s tag');
   const events = await (await call('/api/events?since=2000-01-01', notebook)).json();
   assert.ok(events.some((e) => e.item_code === code('Send the widget draft') && e.client === 'mayer' && e.new === 'done'));
-  assert.ok(!events.some((e) => e.item_code === code('Book the review room')), 'an item once tagged moonbase keeps its history hidden');
+  assert.ok(!events.some((e) => e.item_code === code('Book the review room')), 'nor its history');
 });
 
 test('the digest is refused at normal even with the digest scope', async () => {
@@ -158,6 +167,15 @@ test('a normal-sensitivity client can\'t change what it can\'t see', async () =>
   assert.equal(db.prepare('SELECT status FROM items WHERE code=?').get(hidden).status, 'open');
   const own = await call(`/api/items/${code('Call about the permit')}`, writer, { method: 'POST', body: JSON.stringify({ due: '2026-10-30' }) });
   assert.equal(own.status, 200);
+});
+
+test('a normal client still gets the latest closed items it may see, however many restricted ones are newer', async () => {
+  const insert = db.prepare(`INSERT INTO items (id, code, text, kind, tags, status, closed_at, closed_by) VALUES (?,?,?,'action','["moonbase"]','done',?, 'mayer')`);
+  const top = db.prepare('SELECT MAX(code) AS n FROM items').get().n;
+  for (let i = 1; i <= 120; i++) insert.run(`it_bulk${i}`, top + i, `Bulk MARKER-LUNA close ${i}`, new Date(Date.now() + i * 1000).toISOString());
+  const closed = await (await call('/api/items?status=closed', notebook)).json();
+  assert.ok(closed.some((i) => i.code === permit), 'the cap applies after the filter');
+  assert.doesNotMatch(JSON.stringify(closed), LEAK);
 });
 
 test('with no registry loaded, normal sensitivity is refused (503), not shown everything', async () => {

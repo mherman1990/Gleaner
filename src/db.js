@@ -39,12 +39,15 @@ export function openItems() {
     ORDER BY priority DESC, (due IS NULL), due, (due_time IS NULL), due_time, first_seen`).all(localDate());
 }
 
-/** open (as openItems) | snoozed (still hidden) | closed (done or dropped, latest first) | all. */
-export function listItems(status = 'open') {
-  if (status === 'open') return openItems();
-  if (status === 'snoozed') return db.prepare(`SELECT * FROM items WHERE status='snoozed' AND snooze_until > ? ORDER BY snooze_until, code`).all(localDate());
-  if (status === 'closed') return db.prepare(`SELECT * FROM items WHERE status IN ('done','dropped') ORDER BY closed_at DESC, code DESC LIMIT 100`).all();
-  if (status === 'all') return db.prepare('SELECT * FROM items ORDER BY code DESC LIMIT 500').all();
+/**
+ * open (as openItems) | snoozed (still hidden) | closed (done or dropped, latest first, 100) | all (latest 500).
+ * `keep` filters before the cap, so a client that may not see some items still gets the most recent ones it may.
+ */
+export function listItems(status = 'open', keep = () => true) {
+  if (status === 'open') return openItems().filter(keep);
+  if (status === 'snoozed') return db.prepare(`SELECT * FROM items WHERE status='snoozed' AND snooze_until > ? ORDER BY snooze_until, code`).all(localDate()).filter(keep);
+  if (status === 'closed') return db.prepare(`SELECT * FROM items WHERE status IN ('done','dropped') ORDER BY closed_at DESC, code DESC`).all().filter(keep).slice(0, 100);
+  if (status === 'all') return db.prepare('SELECT * FROM items ORDER BY code DESC').all().filter(keep).slice(0, 500);
   throw new Error('status must be open|snoozed|closed|all');
 }
 
@@ -89,11 +92,13 @@ export function changeItem(id, client, write) {
  * new date. Returns the number of rows changed.
  */
 export function setItemStatus(id, status, by, evidence = null, snoozeUntil = null) {
-  const cur = db.prepare('SELECT status, snooze_until FROM items WHERE id=?').get(id);
-  if (!cur || (cur.status === status && (status !== 'snoozed' || cur.snooze_until === snoozeUntil))) return 0;
-  const closing = status === 'done' || status === 'dropped';
-  return changeItem(id, by, () => db.prepare(`UPDATE items SET status=?, snooze_until=?, closed_at=?, closed_by=?, close_evidence=? WHERE id=?`)
-    .run(status, status === 'snoozed' ? snoozeUntil : null, closing ? now() : null, closing ? by : null, closing ? evidence : null, id).changes);
+  return db.transaction(() => { // decide on the row as it is under the write lock, not as it was a moment before
+    const cur = db.prepare('SELECT status, snooze_until FROM items WHERE id=?').get(id);
+    if (!cur || (cur.status === status && (status !== 'snoozed' || cur.snooze_until === snoozeUntil))) return 0;
+    const closing = status === 'done' || status === 'dropped';
+    return changeItem(id, by, () => db.prepare(`UPDATE items SET status=?, snooze_until=?, closed_at=?, closed_by=?, close_evidence=? WHERE id=?`)
+      .run(status, status === 'snoozed' ? snoozeUntil : null, closing ? now() : null, closing ? by : null, closing ? evidence : null, id).changes);
+  }).immediate();
 }
 
 export const EDITABLE = ['text', 'due', 'due_time', 'person', 'assignee'];
@@ -111,6 +116,10 @@ const blank = (v) => v === null || v === undefined || String(v).trim() === '';
  */
 export function editItem(id, changes, by) {
   if (!by) throw new Error('an item change needs a client to attribute it to');
+  return db.transaction(() => editLocked(id, changes, by)).immediate(); // decide on the row under the write lock
+}
+
+function editLocked(id, changes, by) {
   const cur = db.prepare('SELECT * FROM items WHERE id=?').get(id);
   if (!cur) throw new Error('no such item');
   const next = {};

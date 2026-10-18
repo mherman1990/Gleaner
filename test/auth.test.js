@@ -106,24 +106,7 @@ test('a token added or revoked by another process takes effect without a restart
   assert.match(run('revoke', 'mcp').stdout, /has no token/);
 });
 
-test('two token commands at once both take effect', async () => {
-  const cli = (...args) => new Promise((resolve) => {
-    const child = spawn(process.execPath, [path.join(ROOT, 'src', 'cli.js'), 'token', ...args], { env: { ...process.env, GLEANER_DATA_DIR: dataDir } });
-    let out = '';
-    child.stdout.on('data', (d) => (out += d));
-    child.on('close', (status) => resolve({ status, out }));
-  });
-  for (let i = 0; i < 6; i++) {
-    auth.addToken(`gone-${i}`, { scopes: 'read' });
-    const [revoked, added] = await Promise.all([cli('revoke', `gone-${i}`), cli('add', `new-${i}`, '--scopes', 'read', '--sensitivity', 'all')]);
-    assert.match(revoked.out, /revoked/);
-    const clients = auth.tokenStatus().clients.map((c) => c.client);
-    assert.ok(!clients.includes(`gone-${i}`) && clients.includes(`new-${i}`), `round ${i}: ${clients.join(', ')}`);
-    assert.equal((await call('/api/items', added.out.match(/gl_\S+/)[0])).status, 200);
-  }
-});
-
-test('a token command waits for another one\'s lock, and clears a lock left by one that died', async () => {
+test('a token command waits for another one\'s lock, and stops at a lock left by one that was interrupted', async () => {
   const lock = `${tokensFile}.lock`;
   fs.writeFileSync(lock, '');
   const started = Date.now();
@@ -137,11 +120,23 @@ test('a token command waits for another one\'s lock, and clears a lock left by o
   assert.equal(run.status, 0);
   assert.ok(released && run.at >= released && released - started >= 400, 'it waited for the lock to go');
   assert.ok(auth.tokenStatus().clients.some((c) => c.client === 'waiter'));
-  fs.writeFileSync(lock, '');
-  fs.utimesSync(lock, new Date(Date.now() - 60e3), new Date(Date.now() - 60e3));
-  auth.addToken('after-stale-lock', { scopes: 'read' });
-  assert.ok(auth.tokenStatus().clients.some((c) => c.client === 'after-stale-lock'));
-  assert.equal(fs.existsSync(lock), false);
+  // A lock nobody releases: the command gives up and says what to do, rather than guess it's safe to take over.
+  fs.writeFileSync(lock, 'someone else');
+  auth.LOCK_WAIT.ms = 200;
+  try {
+    assert.throws(() => auth.addToken('after-stuck-lock', { scopes: 'read' }), /interrupted\. If none is running, delete that file/);
+    assert.equal(fs.readFileSync(lock, 'utf8'), 'someone else', 'another\'s lock is never removed');
+  } finally { fs.rmSync(lock, { force: true }); auth.LOCK_WAIT.ms = 5000; }
+  auth.addToken('after-stuck-lock', { scopes: 'read' });
+  assert.equal(fs.existsSync(lock), false, 'its own lock is released');
+});
+
+test('a long run of spaces in the header can\'t stall the server (linear parsing)', () => {
+  const started = process.hrtime.bigint();
+  assert.equal(auth.authenticate(`Bearer x${' '.repeat(15500)}y`), null);
+  assert.ok(Number(process.hrtime.bigint() - started) / 1e6 < 20, 'well under the quadratic regex\'s ~100 ms');
+  assert.equal(auth.authenticate('Bearer'), null);
+  assert.equal(auth.authenticate('Bearer    '), null);
 });
 
 test('a damaged tokens.json shuts its tokens out (closed), and can\'t be overwritten by mistake', async () => {

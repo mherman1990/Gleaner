@@ -55,7 +55,7 @@ export function router() {
     const vis = view(req, res);
     if (!vis) return;
     let rows;
-    try { rows = listItems(req.query.status || 'open'); } catch (e) { return res.status(400).json({ error: e.message }); }
+    try { rows = listItems(req.query.status || 'open', vis.item); } catch (e) { return res.status(400).json({ error: e.message }); }
     if (req.query.tag) { // an alias or case variant finds the same items, older ones and unregistered tags included
       const want = tagKey(canonicalTag(req.query.tag)?.tag);
       rows = rows.filter((i) => canonicalTags(P(i.tags)).some((t) => tagKey(t) === want));

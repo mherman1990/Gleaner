@@ -107,58 +107,64 @@ async function matchAgainstOpen(candidates, excludeIds) {
  */
 export async function applyPageResult(pageRow, result, fallbackDate, r = currentRegistry()) {
   const pageDate = isDate(result.page_date) ? result.page_date : fallbackDate;
-  const prevDate = db.prepare('SELECT page_date FROM pages WHERE id=?').get(pageRow.id)?.page_date || null;
-  db.prepare(`UPDATE pages SET status='transcribed', transcribed_hash=rm_hash, page_date=?, summary=?, tags=?, transcription_md=?,
-    legibility=?, uncertain=?, batch_id=NULL, error=NULL, updated_at=datetime('now') WHERE id=?`)
-    .run(pageDate, result.summary || '', J(canonicalTags(result.tags, r)), result.transcription_md || '', result.legibility || null, J(result.uncertain_spans), pageRow.id);
+  const items = (result.items || []).filter((raw) => raw?.text?.trim()).map((raw) => normalize(raw, r));
+  const priorIds = new Set(priorItemsForPage(pageRow.id).map((p) => p.id));
+  const same = items.filter((it) => it.existing_item_id && priorIds.has(it.existing_item_id));
+  const fresh = items.filter((it) => !same.includes(it));
 
-  const prior = priorItemsForPage(pageRow.id);
-  const priorIds = new Set(prior.map((p) => p.id));
-  const touched = new Set();
-  const fresh = [];
+  // Carry-forward detection for new items, before anything is written: if the call fails, the page stays as it was
+  // and is read again next run. This page's own earlier items are still open here, so one the model re-extracted
+  // without existing_item_id (or reworded) matches and keeps its number instead of being dropped as "erased" and
+  // re-created under a new one.
+  const matches = await matchAgainstOpen(fresh, new Set(same.map((it) => it.existing_item_id)));
 
-  for (const raw of result.items || []) {
-    if (!raw?.text?.trim()) continue;
-    const it = normalize(raw, r);
-    if (it.existing_item_id && priorIds.has(it.existing_item_id)) {
+  // Then everything at once, under the write lock: no reader sees the page's new text without its items (which the
+  // sensitivity filter goes by), and every decision uses the rows as they are now, not as before the call.
+  return db.transaction(() => {
+    const prevDate = db.prepare('SELECT page_date FROM pages WHERE id=?').get(pageRow.id)?.page_date || null;
+    db.prepare(`UPDATE pages SET status='transcribed', transcribed_hash=rm_hash, page_date=?, summary=?, tags=?, transcription_md=?,
+      legibility=?, uncertain=?, batch_id=NULL, error=NULL, updated_at=datetime('now') WHERE id=?`)
+      .run(pageDate, result.summary || '', J(canonicalTags(result.tags, r)), result.transcription_md || '', result.legibility || null, J(result.uncertain_spans), pageRow.id);
+    const prior = priorItemsForPage(pageRow.id);
+    const touched = new Set();
+    for (const it of same) {
       refreshItem(it.existing_item_id, it, pageDate, r);
       mention(it.existing_item_id, pageRow.id, pageDate);
       touched.add(it.existing_item_id);
-    } else fresh.push(it);
-  }
+    }
+    let created = 0, carried = 0;
+    fresh.forEach((it, idx) => {
+      const existing = matches.get(idx);
+      if (existing) {
+        refreshItem(existing, it, pageDate, r); mention(existing, pageRow.id, pageDate); touched.add(existing);
+        if (!priorIds.has(existing)) carried++;
+      } else { touched.add(insertItem(it, pageRow.id, pageDate)); created++; }
+    });
 
-  // Carry-forward detection for new items. This runs before the erase pass on purpose: this page's own earlier
-  // items are still open here, so one the model re-extracted without existing_item_id (or reworded) matches
-  // and keeps its number instead of being dropped as "erased" and re-created under a new one.
-  const matches = await matchAgainstOpen(fresh, touched);
-  let created = 0, carried = 0;
-  fresh.forEach((it, idx) => {
-    const existing = matches.get(idx);
-    if (existing) {
-      refreshItem(existing, it, pageDate, r); mention(existing, pageRow.id, pageDate); touched.add(existing);
-      if (!priorIds.has(existing)) carried++;
-    } else { touched.add(insertItem(it, pageRow.id, pageDate)); created++; }
-  });
+    // Items that came only from this page and vanished from it were erased on the tablet → dropped.
+    for (const p of prior) {
+      if (touched.has(p.id) || p.status !== 'open') continue;
+      const others = db.prepare('SELECT COUNT(*) AS n FROM item_mentions WHERE item_id=? AND page_id<>?').get(p.id, pageRow.id).n;
+      if (!others) { setItemStatus(p.id, 'dropped', 'erased', 'no longer on source page'); touched.add(p.id); }
+    }
 
-  // Items that came only from this page and vanished from it were erased on the tablet → dropped.
-  for (const p of prior) {
-    if (touched.has(p.id) || p.status !== 'open') continue;
-    const others = db.prepare('SELECT COUNT(*) AS n FROM item_mentions WHERE item_id=? AND page_id<>?').get(p.id, pageRow.id).n;
-    if (!others) { setItemStatus(p.id, 'dropped', 'erased', 'no longer on source page'); touched.add(p.id); }
-  }
+    // Number-based closes / snoozes. The page names each item it acts on without mentioning it, so the link is kept
+    // in page_closes: a page that closes restricted work is hidden from clients that may not see it.
+    db.prepare('DELETE FROM page_closes WHERE page_id=?').run(pageRow.id);
+    let closed = 0;
+    for (const c of result.closes || []) {
+      const item = db.prepare('SELECT id, status FROM items WHERE code=?').get(c.code);
+      if (!item) continue;
+      db.prepare('INSERT OR IGNORE INTO page_closes (page_id, item_id) VALUES (?, ?)').run(pageRow.id, item.id);
+      if (item.status === 'done' || item.status === 'dropped') continue;
+      if (c.action === 'snooze' && isDate(c.snooze_until)) setItemStatus(item.id, 'snoozed', 'handwriting', c.evidence, c.snooze_until);
+      else if (c.action === 'done' || c.action === 'dropped') { setItemStatus(item.id, c.action, 'handwriting', c.evidence); closed++; }
+      else continue;
+      touched.add(item.id);
+    }
 
-  // Number-based closes / snoozes.
-  let closed = 0;
-  for (const c of result.closes || []) {
-    const item = db.prepare('SELECT id, status FROM items WHERE code=?').get(c.code);
-    if (!item || item.status === 'done' || item.status === 'dropped') continue;
-    if (c.action === 'snooze' && isDate(c.snooze_until)) setItemStatus(item.id, 'snoozed', 'handwriting', c.evidence, c.snooze_until);
-    else if (c.action === 'done' || c.action === 'dropped') { setItemStatus(item.id, c.action, 'handwriting', c.evidence); closed++; }
-    else continue;
-    touched.add(item.id);
-  }
-
-  return { pageDate, prevDate, created, carried, closed, itemIds: [...touched] };
+    return { pageDate, prevDate, created, carried, closed, itemIds: [...touched] };
+  }).immediate();
 }
 
 export const itemTags = (i) => P(i.tags);

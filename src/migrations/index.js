@@ -3,8 +3,9 @@
 // Never edit one that has shipped; add the next number instead.
 import * as m001 from './001-baseline-v0.1.4.js';
 import * as m002 from './002-events.js';
+import * as m003 from './003-page-closes.js';
 
-export const MIGRATIONS = [m001, m002];
+export const MIGRATIONS = [m001, m002, m003];
 
 /**
  * Apply every migration this database hasn't recorded. Returns the ids applied. Each one takes the write lock first

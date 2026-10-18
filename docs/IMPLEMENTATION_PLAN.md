@@ -38,7 +38,7 @@ This plan covers:
 | G8 | Weekly review lists unregistered tags | The Opus review is free text | A deterministic section appended *after* the model's text, so it costs no tokens and can't be hallucinated. |
 | G9 | Per-client tokens in `/data/tokens.json` | One `GLEANER_API_TOKEN`, compared constant-time | `src/auth.js`: sha256 hashes only, scopes per route, `GLEANER_API_TOKEN` kept as client `legacy` (all scopes, sensitivity all) **through v0.2.x**, as the kickoff says (the spec says one release). The file is mode 0600. CLI: `token add\|revoke\|list`. |
 | G10 | `closed_by` = client name; `ui` stays | Both the UI and the API write `closed_by='api'` | `/ui-api` becomes client `ui`; API tokens write their client name. *Behavior change:* new UI closes show `ui`, old rows keep `api`. |
-| G11 | Sensitivity `normal` filters everything | No concept of sensitivity | Enforced in one module (`src/sensitivity.js`) that every endpoint goes through. An item is hidden if any of its tags is restricted **or** it is mentioned on a page with a restricted tag. A page is hidden whole if any of its tags is restricted. `/api/digest/today` returns **403** at `normal` (the digest text mixes all items). `/api/notes` is re-rendered from SQLite without restricted pages instead of served from the day files. Search, events, projects, and open loops are filtered the same way. |
+| G11 | Sensitivity `normal` filters everything | No concept of sensitivity | Enforced in one module (`src/sensitivity.js`) that every endpoint goes through. An item is hidden if any of its tags is, or ever was, restricted (its tag history is in the events) **or** it is mentioned on a page with a restricted tag. A page is hidden whole if any of its tags is restricted, or if it mentions, closes or snoozes a hidden item (its text holds that item's line). A page's reading is applied in one transaction after the dedupe call, so a page is never visible without its items. `/api/digest/today` returns **403** at `normal` (the digest text mixes all items). `/api/notes` is re-rendered from SQLite without restricted pages instead of served from the day files. Search, events, projects, and open loops are filtered the same way. |
 | G12 | Audit `events` table | No history; `closed_*` columns only | Migration 002. All item writes go through `db.js` helpers that diff old against new and write one row per changed field. Clients: `handwriting`, `erased`, `ui`, `cli`, and the token names. Re-reads that change nothing write nothing. `/api/events?since=` takes an ISO time or `today`. |
 | G13 | Digest line "Mayer closed 3, dropped 1" | — | Counts non-handwriting events since the previous digest run (24 h if none), grouped by client and action. |
 | G14 | Create endpoint "as a source adapter" | The adapter contract (`listDocuments/pull/upload/doctor`) is for notebook sources | `src/adapters/api-inbox.js` is an **item-source** adapter: `enqueue()`, `drain()`, `doctor()`. Both it and the page path call one new ledger function (`upsertCandidates`: normalize → Haiku dedupe → insert or merge), so the pipeline has no special case. A small in-process ledger lock serializes the two writers. The contract file documents the second adapter kind. |
@@ -58,7 +58,7 @@ Cache writes are priced at 1.25× input, and batch requests at 50%.
 
 | # | Spec | Code today | Plan |
 |---|---|---|---|
-| G20 | Checks 6:00am–10:00pm every 15 min | — | Cron `*/15 6-22 * * *` with a time guard that stops after 22:00. Alert state lives in table `alerts` (migration 005): at most once per condition per 6 h, counted only when a channel accepted it, the same rule as nudges. |
+| G20 | Checks 6:00am–10:00pm every 15 min | — | Cron `*/15 6-22 * * *` with a time guard that stops after 22:00. Alert state lives in table `alerts` (migration 006): at most once per condition per 6 h, counted only when a channel accepted it, the same rule as nudges. |
 | G21 | Signal adapter: `GLEANER_SIGNAL_TO` only | — | `/v2/send` also needs the sender number and the container URL: `GLEANER_SIGNAL_URL`, `GLEANER_SIGNAL_FROM` (Mayer's number), `GLEANER_SIGNAL_TO` (yours). |
 | G22 | Messages carry item codes | `notify({title, body})` | Messages gain an optional `codes`. The Signal adapter adds `Reply ✓14 · x14 · 14 → Fri` using the first code. The short digest (≤ 1,500 characters) is built once and sent to every channel. |
 | G23 | Migrations "add only, never edit" | No runner. `db.js` has `CREATE IF NOT EXISTS` plus an inline `ALTER` loop (v0.1.3). | Add `src/migrations/NNN-name.js` and a `schema_migrations` table. `001-baseline-v0.1.4` is today's schema as-is, and every statement in it is idempotent (`CREATE … IF NOT EXISTS`, guarded `ALTER`s), so it runs on a fresh, v0.1.2 or v0.1.4 database alike. Later migrations only add tables, columns, or indexes. |
@@ -83,21 +83,21 @@ Each step is one PR with the spec §5 acceptance test written as an automated te
 ### Step 2 — Tokens, audit, sensitivity filter
 | Area | Changes |
 |---|---|
-| New files | `src/auth.js`; `src/sensitivity.js`; `src/events.js`; `src/migrations/002-events.js`; `test/auth.test.js`; `test/sensitivity.test.js`; `test/events.test.js` |
+| New files | `src/auth.js`; `src/sensitivity.js`; `src/events.js`; `src/migrations/002-events.js`; `src/migrations/003-page-closes.js`; `test/auth.test.js`; `test/sensitivity.test.js`; `test/events.test.js` |
 | Changed | `src/server.js` (per-route scopes, client attribution, filtered responses, `/api/events`, `GET /api/items/:code`; the UI's API moves from `/ui/api` to `/ui-api`, since Umbrel's `/api/*` whitelist matched `//ui/api/…`); `public/index.html`; `src/db.js` (`setItemStatus`/`editItem` take a client and write events); `src/pipeline/ledger.js` (handwriting/erased events); `src/output/markdown.js` (filtered on-the-fly rendering for `normal`); `src/digest/digest.js` (overnight line); `src/cli.js` (`token add\|revoke\|list`) |
 | Tests | A `cowork-notebook` token never returns anything tagged with a restricted project (invented: `moonbase`), or mentioned on such a page, through **any** endpoint. The test sweeps every GET route and searches each response body for the restricted fixture's marker strings. Every API mutation writes event rows. `closed_by` is the client name. The legacy env token still works. Scopes give 403 correctly. Tokens are stored as hashes only. The prompt-injection fixture is stored and served as text only. |
 
 ### Step 3 — Create endpoint
 | Area | Changes |
 |---|---|
-| New files | `src/adapters/api-inbox.js`; `src/migrations/003-items-source.js`; `004-inbox.js`; `test/inbox.test.js` |
+| New files | `src/adapters/api-inbox.js`; `src/migrations/004-items-source.js`; `005-inbox.js`; `test/inbox.test.js` |
 | Changed | `src/pipeline/ledger.js` (extract `upsertCandidates`; ledger lock; erase-drop only for handwriting); `src/server.js` (`POST /api/items`, `dry_run`); `src/adapters/bundle.js` (comment on the second adapter kind) |
 | Tests | The same `source_ref` twice gives one item. Near-duplicate text gives `merged` (fake Haiku match). A forced budget overrun gives `queued`, then the item is created. A dry run writes nothing. An email item later handwritten keeps `source=email` and isn't erase-dropped. |
 
 ### Step 4 — Projects and health endpoints
 | Area | Changes |
 |---|---|
-| New files | `src/projects.js`; `src/health.js`; `src/migrations/005-alerts.js`; `test/projects.test.js`; `test/health.test.js` |
+| New files | `src/projects.js`; `src/health.js`; `src/migrations/006-alerts.js`; `test/projects.test.js`; `test/health.test.js` |
 | Changed | `src/server.js` (`/api/projects`, `/api/projects/:tag`, `/api/health`); `src/scheduler.js` (`healthCheck` job); `src/config.js` (thresholds, prices); `src/adapters/{rmapi,ssh,fixture}.js` (`authCheck`) |
 | Tests | `/api/projects/<tag>` (invented: `bridge-permit`) equals a count computed straight from the fixture rows. A failing `authCheck` raises one alert on the first check and none for the next 6 h (simulated clock), then one again. Each other condition is unit-tested with injected readings. |
 
@@ -141,9 +141,10 @@ Runbook only.
 |---|---|---|
 | `001-baseline-v0.1.4` | Today's tables: documents, pages, items (with due_time/assignee/edited), item_mentions, batches, runs, usage. Idempotent: on an existing v0.1.4 database it changes nothing, and on an older one it adds the v0.1.3 item columns. | 1 |
 | `002-events` | `events(id, at, client, item_code, field, old, new)` plus indexes on `at` and `item_code` | 2 |
-| `003-items-source` | `items.source TEXT DEFAULT 'handwriting'`, `items.source_ref TEXT`, unique index on `(source, source_ref)` where `source_ref` is not null | 3 |
-| `004-inbox` | `inbox(id, at, client, source, source_ref, payload, status, result, item_code, error)` | 3 |
-| `005-alerts` | `alerts(condition PRIMARY KEY, active, first_seen, last_sent, detail)` | 4 |
+| `003-page-closes` | `page_closes(page_id, item_id)`: which page closed or snoozed which item by number or ticked box, so a page that closes restricted work is hidden at sensitivity normal | 2 |
+| `004-items-source` | `items.source TEXT DEFAULT 'handwriting'`, `items.source_ref TEXT`, unique index on `(source, source_ref)` where `source_ref` is not null | 3 |
+| `005-inbox` | `inbox(id, at, client, source, source_ref, payload, status, result, item_code, error)` | 3 |
+| `006-alerts` | `alerts(condition PRIMARY KEY, active, first_seen, last_sent, detail)` | 4 |
 
 Each migration test copies `test/fixtures/v0.1.4.sql` into a fresh database, migrates it, and checks the old rows are intact.
 
