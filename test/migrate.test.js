@@ -77,9 +77,13 @@ test('pages read before the upgrade are linked to the items their text closes, a
   page.run('pg-b', 2, 'not json', '- ☑ Sign the fixture form\n- marked on source page');
   page.run('pg-c', 3, '[]', 'snooze 5 Fri\nx6, not needed\npaint shed 8 ✓ and 14 → Mon');
   page.run('pg-d', 4, '[]', 'Met 6 people, 3 said yes; box14 and Q3 → Q4 2x4 boards');
+  page.run('pg-e', 5, '[]', 'done 1 and drop 2');
+  page.run('pg-f', 6, '[]', '✔️3 (an emoji tick)\n7, 12 → Fri');
+  page.run('pg-g', 7, '[]', 'Done today: ✓5, 8 and ❌ 6');
   migrate(v014);
   assert.deepEqual(v014.prepare('SELECT page_id, item_id FROM page_closes ORDER BY page_id, item_id').all().map((r) => `${r.page_id}:${r.item_id}`),
-    ['pg-a:it_c', 'pg-b:it_d', 'pg-c:it_e', 'pg-c:it_f', 'pg-c:it_h'], 'no link from prose, or from the words Gleaner writes itself');
+    ['pg-a:it_c', 'pg-b:it_d', 'pg-c:it_e', 'pg-c:it_f', 'pg-c:it_h', 'pg-e:it_a', 'pg-e:it_b', 'pg-f:it_c', 'pg-f:it_g',
+      'pg-g:it_e', 'pg-g:it_f', 'pg-g:it_h'], 'every number of a list, emoji marks, and no link from prose or the words Gleaner writes itself');
   assert.deepEqual(v014.prepare('SELECT page_id, tag FROM page_tags ORDER BY page_id, tag').all().map((r) => `${r.page_id}:${r.tag}`),
     ['pg-1:45Z', 'pg-1:widget-permits', 'pg-a:orchard']);
   v014.close();

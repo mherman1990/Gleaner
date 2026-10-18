@@ -44,7 +44,8 @@ Read README.md for setup and docs/HANDWRITING.md for the notation the extractor 
     process wrote after the judgement are hidden; with no registry it's a 503. Each GET route reads in one
     transaction with its `visibility()` call, and `POST /items/:code` checks and writes under one write lock.
     `applyPageResult` writes a page and its items in one transaction, after the dedupe call. The prompt and the dedupe
-    see a page's closed items too (`itemsOnPage`), so a re-read ticked line links back instead of duplicating.
+    see the items a page closed or snoozed (`closedOnPage`), listed apart from its own lines, so a ticked line read
+    again links back instead of duplicating; a line linked to one only ticks it off.
     `test/sensitivity.test.js` sweeps every GET route; a new route needs a probe there.
   - Every item write goes through `changeItem()` / `recordEvent()` in `src/db.js`, which write the `events` rows
     with the client; `editItem()` and `setItemStatus()` require one. `src/events.js` reads them (`/api/events`, the

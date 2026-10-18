@@ -13,20 +13,23 @@ import { DEDUPE_SYSTEM, MATCH_SCHEMA } from '../llm/prompts.js';
 
 const VALID = new Set(['action', 'followup', 'waiting', 'decision', 'idea', 'question']);
 const isDate = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s);
+const isClosed = (status) => status === 'done' || status === 'dropped';
 
-/** The items with a line on this page (its mentions): the ones erasing that line can drop. */
+/** The items with a line on this page (its mentions): the ones a re-read updates, and erasing their line drops. */
 export function priorItemsForPage(pageId) {
-  return db.prepare(`SELECT i.id, i.text, i.status FROM items i JOIN item_mentions m ON m.item_id = i.id WHERE m.page_id = ?`).all(pageId);
+  return db.prepare(`SELECT i.id, i.code, i.text, i.person, i.status FROM items i JOIN item_mentions m ON m.item_id = i.id
+    WHERE m.page_id = ? ORDER BY i.code`).all(pageId);
 }
 
 /**
- * Every item this page names: its own lines, and the items it closed or snoozed by number or by a checked box.
- * The prompt lists them as the page's earlier items, so a re-read links a ticked line back to its item (closed by
- * now, so no longer in the open list) instead of making a new one.
+ * Items from other pages that this page closed or snoozed, by number or by ticking a line for them, with no line of
+ * their own here. The prompt lists them apart from the page's own items, so a re-read links a ticked line back to its
+ * item (closed by now, so no longer in the open list) instead of reading it as new. A line linked to one stands for
+ * that close, so it changes nothing about the item but a tick.
  */
-export function itemsOnPage(pageId) {
-  return db.prepare(`SELECT id, code, text, person, status FROM items WHERE id IN
-    (SELECT item_id FROM item_mentions WHERE page_id = ? UNION SELECT item_id FROM page_closes WHERE page_id = ?) ORDER BY code`).all(pageId, pageId);
+export function closedOnPage(pageId) {
+  return db.prepare(`SELECT id, code, text, person, status FROM items WHERE id IN (SELECT item_id FROM page_closes WHERE page_id = ?)
+    AND id NOT IN (SELECT item_id FROM item_mentions WHERE page_id = ?) ORDER BY code`).all(pageId, pageId);
 }
 
 function mention(itemId, pageId, pageDate) {
@@ -98,22 +101,27 @@ function refreshItem(id, it, pageDate, r) {
 }
 
 /**
- * Which new lines are the same commitment as an existing item: an open one, or one this page already names whatever
- * its status (a ticked line re-read without its id is the item it closed, not a new one). An open line never matches
- * a closed item: writing a done task again is a new commitment.
+ * Which new lines are the same commitment as an existing item. Candidates: the open loops and this page's items that
+ * are open or snoozed, and, when a new line is ticked, this page's done and dropped ones (its own and those it closed):
+ * a ticked line read again without its id is that item, not a new one. A line that isn't ticked never matches a done
+ * or dropped item: writing a done task again is a new commitment. Returns new line index → item id.
  */
 async function matchExisting(candidates, excludeIds, pageId) {
-  const open = [...new Map([...openItems(), ...itemsOnPage(pageId)].map((o) => [o.id, o])).values()].filter((o) => !excludeIds.has(o.id));
-  if (!candidates.length || !open.length) return new Map();
-  const content = `${candidates.map((c, i) => `NEW n${i}: ${c.text}${c.person ? ` [${c.person}]` : ''}`).join('\n')}\n\n${open.map((o) => `OPEN ${o.code}: ${o.text}${o.person ? ` [${o.person}]` : ''}`).join('\n')}`;
+  const ticked = (c) => isClosed(c.status);
+  const pool = new Map(openItems().map((o) => [o.id, o]));
+  for (const o of [...priorItemsForPage(pageId), ...closedOnPage(pageId)]) if (!isClosed(o.status) || candidates.some(ticked)) pool.set(o.id, o);
+  const existing = [...pool.values()].filter((o) => !excludeIds.has(o.id));
+  if (!candidates.length || !existing.length) return new Map();
+  const label = (x) => `${x.text}${x.person ? ` [${x.person}]` : ''}`;
+  const content = `${candidates.map((c, i) => `NEW n${i}: ${label(c)}${ticked(c) ? ' (ticked)' : ''}`).join('\n')}\n\n${
+    existing.map((o) => `${isClosed(o.status) ? 'CLOSED' : 'OPEN'} ${o.code}: ${label(o)}`).join('\n')}`;
   const res = await callStructured(structuredParams({ model: config.llm.triageModel, systemBlocks: [DEDUPE_SYSTEM], content, schema: MATCH_SCHEMA }), 'dedupe');
-  const byCode = new Map(open.map((o) => [o.code, o]));
-  const closed = (o) => o.status === 'done' || o.status === 'dropped';
+  const byCode = new Map(existing.map((o) => [o.code, o]));
   const out = new Map();
   for (const m of res.matches || []) {
     const idx = Number(String(m.new_ref).replace(/^n/, ''));
     const o = byCode.get(m.code);
-    if (o && candidates[idx] && !out.has(idx) && !(closed(o) && candidates[idx].status === 'open')) out.set(idx, o.id);
+    if (o && candidates[idx] && !out.has(idx) && (ticked(candidates[idx]) || !isClosed(o.status))) out.set(idx, o.id);
   }
   return out;
 }
@@ -127,15 +135,19 @@ async function matchExisting(candidates, excludeIds, pageId) {
 export async function applyPageResult(pageRow, result, fallbackDate, r = currentRegistry()) {
   const pageDate = isDate(result.page_date) ? result.page_date : fallbackDate;
   const items = (result.items || []).filter((raw) => raw?.text?.trim()).map((raw) => normalize(raw, r));
-  const priorIds = new Set(itemsOnPage(pageRow.id).map((p) => p.id));
-  const same = items.filter((it) => it.existing_item_id && priorIds.has(it.existing_item_id));
-  const fresh = items.filter((it) => !same.includes(it));
+  const priorIds = new Set(priorItemsForPage(pageRow.id).map((p) => p.id));
+  const closedHere = new Map(closedOnPage(pageRow.id).map((i) => [i.id, i]));
+  const same = items.filter((it) => priorIds.has(it.existing_item_id));
+  // A line linked to an item this page only closed or snoozed stands for that close: at most it ticks the item off.
+  // Unless the item is done and the line isn't ticked: that's the task written again, a new commitment.
+  const ticks = items.filter((it) => closedHere.has(it.existing_item_id) && (isClosed(it.status) || !isClosed(closedHere.get(it.existing_item_id).status)));
+  const fresh = items.filter((it) => !same.includes(it) && !ticks.includes(it));
 
   // Carry-forward detection for new items, before anything is written: if the call fails, the page stays as it was
   // and is read again next run. This page's own earlier items are candidates too, so one the model re-extracted
   // without existing_item_id (or reworded) matches and keeps its number instead of being dropped as "erased" and
   // re-created under a new one, and a ticked line doesn't become a second, done copy of the item it closed.
-  const matches = await matchExisting(fresh, new Set(same.map((it) => it.existing_item_id)), pageRow.id);
+  const matches = await matchExisting(fresh, new Set([...same, ...ticks].map((it) => it.existing_item_id)), pageRow.id);
 
   // Then everything at once, under the write lock: no reader sees the page's new text without its items (which the
   // sensitivity filter goes by), and every decision uses the rows as they are now, not as before the call.
@@ -154,9 +166,16 @@ export async function applyPageResult(pageRow, result, fallbackDate, r = current
       mention(it.existing_item_id, pageRow.id, pageDate);
       touched.add(it.existing_item_id);
     }
+    const statusOf = (id) => db.prepare('SELECT status FROM items WHERE id=?').get(id)?.status;
+    for (const it of ticks) {
+      if (!isClosed(it.status) || isClosed(statusOf(it.existing_item_id))) continue;
+      setItemStatus(it.existing_item_id, it.status, 'handwriting', 'checked on page');
+      touched.add(it.existing_item_id);
+    }
     let created = 0, carried = 0;
     fresh.forEach((it, idx) => {
       const existing = matches.get(idx);
+      if (existing && closedHere.has(existing) && isClosed(statusOf(existing))) return; // the ticked line of an item this page closed
       if (existing) {
         refreshItem(existing, it, pageDate, r); mention(existing, pageRow.id, pageDate); touched.add(existing);
         if (!priorIds.has(existing)) carried++;

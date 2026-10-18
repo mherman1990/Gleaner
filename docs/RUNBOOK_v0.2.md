@@ -75,9 +75,9 @@ After upgrading to the release with step 2. Each client gets its own token: who 
    ```
    No item from a restricted project should be in it. The same request with the `mayer` token includes them.
    Pages read before this upgrade: the upgrade links each one to the items it closed or snoozed by number (`✓14`,
-   `x14`, `14 → Fri`) and to the items whose close quoted its words, and keeps every page's current tags. Two things
-   from before the upgrade can't be recovered: a box ticked on an unrestricted page that closed a restricted item from
-   another page, and a restricted tag that an earlier re-read had already dropped. If either may apply, read the
+   `✓14, 15`, `x14`, `14 → Fri`) and to the items whose close quoted its words, and keeps every page's current tags.
+   Two things from before the upgrade can't be recovered: a box ticked on an unrestricted page that closed a restricted
+   item from another page, and a restricted tag that an earlier re-read had already dropped. If either may apply, read the
    notes for those days with the `cowork-notebook` token:
    `curl -s -H "Authorization: Bearer <cowork-notebook token>" "http://umbrel.local:3717/api/notes?from=2026-10-01&to=2026-10-31"`.
    Anything restricted in it can be hidden by tagging that page's line on the tablet (`#mb` with your restricted tag),

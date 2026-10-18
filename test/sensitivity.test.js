@@ -17,7 +17,7 @@ fs.copyFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixture
 
 const { paths } = await import('../src/config.js');
 const { db, setItemStatus, startRun, endRun } = await import('../src/db.js');
-const { applyPageResult, itemsOnPage } = await import('../src/pipeline/ledger.js');
+const { applyPageResult, closedOnPage } = await import('../src/pipeline/ledger.js');
 const { visibility } = await import('../src/sensitivity.js');
 const Database = (await import('better-sqlite3')).default;
 const { writeDayFiles, writeOpenLoops } = await import('../src/output/markdown.js');
@@ -194,8 +194,8 @@ test('a re-read of a page that ticked off or closed restricted work keeps it hid
   const ticked = await page('2026-10-23', ['orchard'], '☑ Sign the MARKER-LUNA-TICK form', [], [{ code: tick, action: 'done', snooze_until: null, evidence: '☑' }]);
   const numbered = await page('2026-10-23', ['orchard'], `✓${num} MARKER-LUNA rover priced at 4M`, [], [{ code: num, action: 'done', snooze_until: null, evidence: `✓${num}` }]);
   // Both items are closed now, so they're no longer in the open list a re-read gets, and the model can't repeat the
-  // closes. The page still names the item it ticked off as one of its own, and the link from each page stays.
-  assert.deepEqual(itemsOnPage(ticked.id).map((i) => [i.text, i.status]), [['Sign the MARKER-LUNA-TICK form', 'done']]);
+  // closes. The prompt still lists the item each page closed, and the link from each page stays.
+  assert.deepEqual(closedOnPage(ticked.id).map((i) => [i.text, i.status]), [['Sign the MARKER-LUNA-TICK form', 'done']]);
   await reread(ticked, '2026-10-23', ['orchard'], '☑ Sign the MARKER-LUNA-TICK form\n- ☐ Water the pear trees', [{ text: 'Water the pear trees' }]);
   await reread(numbered, '2026-10-23', ['orchard'], `✓${num} MARKER-LUNA rover priced at 4M`, []);
   const vis = visibility('normal');
@@ -263,12 +263,15 @@ test('a read sees one snapshot: a page another process makes restricted mid-requ
   const orchard = db.prepare(`SELECT * FROM pages WHERE transcription_md LIKE '%Orchard walk%'`).get();
   const w = writeBefore('FROM page_closes', (other) => other.prepare(`UPDATE pages SET tags='["moonbase"]', transcription_md=? WHERE id=?`)
     .run('Orchard walk MARKER-LUNA-RACE', orchard.id));
-  let body;
-  try { body = await (await call('/api/notes/2026-10-18', notebook)).text(); } finally { w.done(); }
-  assert.ok(w.wrote, 'the other process wrote while the request was being answered');
-  assert.doesNotMatch(body, LEAK);
-  assert.equal(visibility('normal').page(orchard), false, 'and the next request hides the page');
-  db.prepare('UPDATE pages SET tags=?, transcription_md=? WHERE id=?').run(orchard.tags, orchard.transcription_md, orchard.id);
+  try {
+    let body;
+    try { body = await (await call('/api/notes/2026-10-18', notebook)).text(); } finally { w.done(); }
+    assert.ok(w.wrote, 'the other process wrote while the request was being answered');
+    assert.doesNotMatch(body, LEAK);
+    assert.equal(visibility('normal').page(orchard), false, 'and the next request hides the page');
+  } finally { // the page as it was, for the tests after this one
+    db.prepare('UPDATE pages SET tags=?, transcription_md=? WHERE id=?').run(orchard.tags, orchard.transcription_md, orchard.id);
+  }
 });
 
 test('a change checks and changes the item under one lock: another process can\'t make it restricted in between', async () => {

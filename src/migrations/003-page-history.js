@@ -5,17 +5,21 @@
 // - page_tags: every tag a page has been read with. A re-read that misses a restricted tag, or a restricted page
 //   erased and written over, stays restricted.
 // Both are only added to. For pages read before this migration, page_tags starts from each page's current tags, and
-// page_closes from the close notation in its text: a number after ✓, x, ✗, done, drop or snooze, or before ✓ or →,
-// linked to the item with that number (a page that only looks like it closes one is hidden too), and the words a
-// handwriting close quoted as its evidence. A checked box that left no such trace can't be found.
+// page_closes from the close notation in its text: numbers after ✓, x, ✗, done, drop or snooze, or before ✓ or →
+// (one, or a list: "✓14, 15", "12 & 14 → Fri"), linked to the items with those numbers (a page that only looks like
+// it closes one is hidden too), and the words a handwriting close quoted as its evidence. A checked box that left no
+// such trace can't be found.
 export const id = '003-page-history';
 
+const NUMS = String.raw`#?\d{1,6}(?:\s*(?:,|&|\+|\/|\band\b)\s*#?\d{1,6})*`; // 14 | 14, 15 | #14 & #15 | 14 and 15
+const TICK = String.raw`[✓✔☑✅]\uFE0F?`;
+const CROSS = String.raw`[xX✗✘×✖❌☒]\uFE0F?`;
 const CLOSE_REFS = [
-  /[✓✔☑]\s*#?(\d{1,6})(?!\d)/gu, // ✓14
-  /(?<![\p{L}\d])(\d{1,6})\s*[✓✔]/gu, // 14 ✓
-  /(?<![\p{L}\d])[xX✗✘×]\s*#?(\d{1,6})(?!\d)/gu, // x14, ✗14
-  /(?<![\p{L}\d])(?:done|drop|dropped|snooze)\s+#?(\d{1,6})(?!\d)/giu, // done 14, drop 14, snooze 14 Fri
-  /(?<![\p{L}\d])(\d{1,6})\s*(?:→|->)/gu, // 14 → Fri
+  new RegExp(String.raw`${TICK}\s*(${NUMS})(?!\d)`, 'gu'), // ✓14, ✔️ 14, 15
+  new RegExp(String.raw`(?<![\p{L}\d#])(${NUMS})\s*${TICK}`, 'gu'), // 14 ✓
+  new RegExp(String.raw`(?<![\p{L}\d])${CROSS}\s*(${NUMS})(?!\d)`, 'gu'), // x14, ✗14
+  new RegExp(String.raw`(?<![\p{L}\d])(?:done|drop|dropped|snooze)\s*:?\s+(${NUMS})(?!\d)`, 'giu'), // done 14, drop 14, snooze 14 Fri
+  new RegExp(String.raw`(?<![\p{L}\d#])(${NUMS})\s*(?:→|->)`, 'gu'), // 14 → Fri, 12, 14 → Fri
 ];
 // What Gleaner itself writes as close_evidence, which names no page.
 const OWN_EVIDENCE = ['marked on source page', 'checked on page', 'no longer on source page'];
@@ -48,7 +52,9 @@ CREATE TABLE IF NOT EXISTS page_tags (
 
     const text = p.transcription_md || '';
     for (const re of CLOSE_REFS) {
-      for (const m of text.matchAll(re)) if (byCode.has(Number(m[1]))) addClose.run(p.id, byCode.get(Number(m[1])));
+      for (const m of text.matchAll(re)) {
+        for (const num of m[1].match(/\d+/g)) if (byCode.has(Number(num))) addClose.run(p.id, byCode.get(Number(num)));
+      }
     }
     const lower = text.toLowerCase();
     for (const i of quoted) if (lower.includes(i.words)) addClose.run(p.id, i.id);
