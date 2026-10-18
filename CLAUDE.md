@@ -17,11 +17,14 @@ Read README.md for setup and docs/HANDWRITING.md for the notation the extractor 
   - Number closes (`✓14`, `x14`, `14 → Fri`) act on earlier items.
   - New items are deduped against open loops by Haiku; a match bumps `carry_days`.
   - A line no longer on a page is marked gone there (`item_mentions.gone_at`; the row stays for the sensitivity
-    filter), and an open item with no line left on any page is dropped. Items erased in the last 6 hours
-    (`MOVED_WITHIN_HOURS`: the same sync or the next) are dedupe candidates: a line cut from one page and pasted on
-    another (or struck through and rewritten) is the same item, moved, and is reopened with fresh nudges. Later, a line
-    linked to an erased item is the task written again, a new item. A close by number, or a person dropping it, makes an
-    erased item's drop final. A due date changed on the page resets the nudges, as a hand edit does.
+    filter), and an open item (or one whose snooze is over) with no line left on any page is dropped as "erased". A
+    page that renders blank or is deleted on the tablet counts as every line gone (`pageEmptied`). Items whose line
+    left a page in the last 6 hours (`MOVED_WITHIN_HOURS`: the same sync or the next) are dedupe candidates: a line cut
+    from one page and pasted on another is the same item, moved (an erased drop reopens). Striking a line through
+    cancels it, as the notation says; it isn't a move. The rules for which item a line is are listed at
+    `applyPageResult`: a line written again on its page after its item was closed and its line erased, or long after an
+    erased drop, is a new item that keeps the old one's tags. A close by number, or a person dropping it, makes an
+    erased item's drop final. A due date or time changed on a dated page resets the nudges, as a hand edit does.
   - In task-list notebooks (`notebooks.taskLists`, default `["To do"]`), every written line is an item. Elsewhere
     only the notation or an explicit commitment makes one. The rule is in the cached system prompt, and the
     per-page flag is in the user turn.

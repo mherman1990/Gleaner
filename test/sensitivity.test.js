@@ -248,6 +248,20 @@ test('a line moved off a restricted page stays hidden, and so does the page it m
   assert.deepEqual(await leaks(), []);
 });
 
+test('a restricted task written again on a normal page, after its line left it, stays hidden', async () => {
+  const lease = [{ text: 'Get the MARKER-LUNA-AGAIN lease signed', tags: ['mb'], mark: ' #mb' }];
+  const n = await page('2026-10-29', ['widget-report'], lines('Lease', lease), lease);
+  const id = idOf(lease[0].text);
+  await reread(n, '2026-10-29', ['widget-report'], 'Lease (line erased)', []); // erased, or a read missed it
+  db.prepare('UPDATE item_mentions SET gone_at=? WHERE item_id=?').run(new Date(Date.now() - 48 * 3600e3).toISOString(), id);
+  db.prepare('UPDATE items SET closed_at=? WHERE id=?').run(new Date(Date.now() - 48 * 3600e3).toISOString(), id);
+  await reread(n, '2026-10-29', ['widget-report'], 'Get the MARKER-LUNA-AGAIN lease signed', [{ text: lease[0].text, existing_item_id: id }]); // no #mb this time
+  const copies = db.prepare('SELECT id, status, tags FROM items WHERE text=? ORDER BY code').all(lease[0].text);
+  assert.deepEqual(copies.map((c) => c.status), ['dropped', 'open'], 'a new item: the old one was erased long ago');
+  assert.equal(visibility('normal').item(copies[1]), false, 'it keeps the old one\'s restricted tag');
+  assert.deepEqual(await leaks(), []);
+});
+
 test('rows written after the judgement are hidden until the next one', () => {
   const vis = visibility('normal');
   db.prepare(`INSERT INTO pages (id, doc_id, page_index, rm_hash, status, tags) VALUES ('pg-late', 'doc1', 99, 'late', 'transcribed', '["orchard"]')`).run();

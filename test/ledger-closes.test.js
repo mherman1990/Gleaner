@@ -108,12 +108,34 @@ test('a ticked recurring task read again is its own item, not this week\'s open 
   const thisWeek = db.prepare(`SELECT id, text FROM items WHERE status='open' AND text IN ('Send the weekly invented report', 'Mail the invented invoices')`).all();
   assert.equal(thisWeek.length, 2);
 
-  dedupes.length = 0;
-  await read(own, '2026-10-06', [line('Send the weekly invented report', { status: 'done' })]);
+  dedupes.length = 0; // read again, the lines come back without ids, in other case and punctuation
+  await read(own, '2026-10-06', [line('send the weekly invented report.', { status: 'done' })]);
   await read(closer, '2026-10-07', [line('Water the invented plants', { existing_item_id: row('Water the invented plants').id }),
-    line('Mail the invented invoices', { status: 'done' })]);
+    line('Mail the invented invoices!', { status: 'done' })]);
   assert.deepEqual(thisWeek.map((i) => db.prepare('SELECT status FROM items WHERE id=?').get(i.id).status), ['open', 'open']);
   assert.deepEqual(dedupes, [], 'matched in code, before any dedupe call');
+});
+
+test('a ticked line is matched in code to a done item only for the same person, or none named', async () => {
+  const p = newPage();
+  await read(p, '2026-10-20', [line('Send the invented invoice', { person: 'Alex', status: 'done' })]);
+  const alex = db.prepare(`SELECT id FROM items WHERE text='Send the invented invoice'`).get().id;
+  await read(p, '2026-10-20', [line('Send the invented invoice', { person: 'Alex', status: 'done', existing_item_id: alex }),
+    line('Send the invented invoice', { person: 'Jen', status: 'done' })]); // Jen's, ticked, new
+  assert.deepEqual(db.prepare(`SELECT person, status FROM items WHERE text='Send the invented invoice' ORDER BY code`).all(),
+    [{ person: 'Alex', status: 'done' }, { person: 'Jen', status: 'done' }]);
+  const jen = db.prepare(`SELECT id FROM items WHERE person='Jen'`).get().id;
+  dedupes.length = 0;
+  await read(p, '2026-10-20', [line('Send the invented invoice', { person: 'Alex', status: 'done', existing_item_id: alex }),
+    line('Send the invented invoice', { status: 'done' })]); // Jen's line read again, without its id or her name
+  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM items WHERE text='Send the invented invoice'`).get().n, 2);
+  assert.ok(mentionsOn(p).includes(jen) && dedupes.length === 0, 'matched in code, to the one not already linked');
+
+  // A page that closed Alex's by number: Jen's ticked line of the same words there is hers, not his tick.
+  const q = newPage();
+  await read(q, '2026-10-21', [], [{ code: db.prepare('SELECT code FROM items WHERE id=?').get(alex).code, action: 'done', snooze_until: null, evidence: '✓' }]);
+  await read(q, '2026-10-21', [line('Send the invented invoice', { person: 'Jen Two', status: 'done' })]);
+  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM items WHERE text='Send the invented invoice'`).get().n, 3, 'a new done item for her');
 });
 
 test('the dedupe offers done items only to a ticked line, labelled closed', async () => {

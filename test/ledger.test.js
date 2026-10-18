@@ -5,7 +5,7 @@ import { tempEnv, pushSink } from './helpers.js';
 
 tempEnv('ledger');
 const { db, openItems, editItem, listItems, setItemStatus } = await import('../src/db.js');
-const { applyPageResult } = await import('../src/pipeline/ledger.js');
+const { applyPageResult, pageEmptied } = await import('../src/pipeline/ledger.js');
 const { normTime, fmtTime, localDate, config } = await import('../src/config.js');
 const { reminderSweep } = await import('../src/digest/digest.js');
 
@@ -27,6 +27,12 @@ const byCode = (code) => db.prepare('SELECT * FROM items WHERE code=?').get(code
 
 beforeEach(() => db.exec('DELETE FROM item_mentions; DELETE FROM items; DELETE FROM pages; DELETE FROM documents; DELETE FROM events; DELETE FROM page_closes; DELETE FROM page_tags;'));
 const hoursAgo = (h) => new Date(Date.now() - h * 3600e3).toISOString();
+// Backdate when item `code`'s line left its pages (and its drop, if that dropped it) by `h` hours.
+const leftAgo = (code, h) => {
+  const id = byCode(code).id;
+  db.prepare('UPDATE item_mentions SET gone_at=? WHERE item_id=? AND gone_at IS NOT NULL').run(hoursAgo(h), id);
+  db.prepare(`UPDATE items SET closed_at=? WHERE id=? AND closed_by='erased'`).run(hoursAgo(h), id);
+};
 const statusEvents = (code) => db.prepare(`SELECT client, old, new FROM events WHERE item_code=? AND field='status' ORDER BY id`).all(code).map((e) => `${e.client}:${e.old}->${e.new}`);
 
 test('new items get sequential codes, fields, and a mention', async () => {
@@ -131,11 +137,11 @@ test('a move is a line written elsewhere within hours; a task erased and written
   const [d1, d2, d3] = [page(), page(), page()];
   await apply(d1, result([item('Check the invented bin temps')], { page_date: '2026-10-14' }));
   await apply(d1, result([], { page_date: '2026-10-14' })); // done, and erased
-  db.prepare('UPDATE items SET closed_at=? WHERE code=1').run(hoursAgo(3)); // in the sync before last: still a move
+  leftAgo(1, 5); // in the sync before last: still a move
   await apply(d2, result([item('Check the invented bin temps')], { page_date: '2026-10-14' }));
   assert.deepEqual(items().map((i) => [i.code, i.status]), [[1, 'open']]);
   await apply(d2, result([], { page_date: '2026-10-14' }));
-  db.prepare('UPDATE items SET closed_at=? WHERE code=1').run(hoursAgo(14)); // erased last evening
+  leftAgo(1, 7); // erased this morning, written again this afternoon
   await apply(d3, result([item('Check the invented bin temps')], { page_date: '2026-10-15' }));
   assert.deepEqual(items().map((i) => [i.code, i.status, i.carry_days]), [[1, 'dropped', 1], [2, 'open', 1]]);
 });
@@ -145,7 +151,7 @@ test('a line that one read missed, and the next one links again, reopens its ite
   await apply(p, result([item('Grease the invented auger')]));
   await apply(p, result([])); // the line was missed (or erased and rewritten)
   assert.equal(byCode(1).status, 'dropped');
-  await apply(p, result([item('Grease the invented auger', { existing_item_id: byCode(1).id })]));
+  await apply(p, result([item('Grease the auger', { existing_item_id: byCode(1).id })])); // linked back, worded a little differently
   assert.deepEqual([items().length, byCode(1).status, byCode(1).closed_by], [1, 'open', null]);
   setItemStatus(byCode(1).id, 'dropped', 'ui'); // dropped by hand: a re-read leaves it dropped
   await apply(p, result([item('Grease the invented auger', { existing_item_id: byCode(1).id })]));
@@ -157,7 +163,7 @@ test('a line linked to an item erased from this page long ago is the task writte
   await apply(p, result([item('Pay the invented rent', { due: '2026-09-15' })]));
   editItem(byCode(1).id, { due: '2026-09-16' }, 'ui');
   await apply(p, result([])); // paid, and erased
-  db.prepare('UPDATE items SET closed_at=? WHERE code=1').run(hoursAgo(24 * 30));
+  leftAgo(1, 24 * 30);
   await apply(p, result([item('Pay the invented rent', { existing_item_id: byCode(1).id, due: '2026-10-31' })]));
   assert.deepEqual(items().map((i) => [i.code, i.status, i.due]), [[1, 'dropped', '2026-09-16'], [2, 'open', '2026-10-31']]);
 });
@@ -183,18 +189,36 @@ test('a close by number wins over a move: an item closed while its line was betw
   assert.deepEqual(items().map((i) => [i.code, i.status]), [[1, 'done']]);
 });
 
-test('a moved item is nudged afresh; so is one whose due date the page changes', async () => {
-  const q = page(), p = page();
-  await apply(q, result([item('Call the invented office', { due: '2026-10-14' })], { page_date: '2026-10-14' }));
-  db.prepare(`UPDATE items SET last_nudged='2026-10-16T14:00:00Z', nudge_count=3 WHERE code=1`).run();
-  await apply(q, result([], { page_date: '2026-10-14' }));
-  await apply(p, result([item('Call the invented office')], { page_date: '2026-10-16' }));
-  assert.deepEqual([byCode(1).status, byCode(1).nudge_count, byCode(1).last_nudged], ['open', 0, null]);
-  db.prepare(`UPDATE items SET last_nudged='2026-10-16T14:00:00Z', nudge_count=3 WHERE code=1`).run();
-  await apply(p, result([item('Call the invented office', { existing_item_id: byCode(1).id })], { page_date: '2026-10-16' }));
-  assert.equal(byCode(1).nudge_count, 3, 'the same due date: nudges stand');
-  await apply(p, result([item('Call the invented office', { existing_item_id: byCode(1).id, due: '2026-10-20' })], { page_date: '2026-10-16' }));
-  assert.deepEqual([byCode(1).due, byCode(1).nudge_count, byCode(1).last_nudged], ['2026-10-20', 0, null]);
+test('nudges start again when the page gives a new due date or time, whichever order a move is read in', async () => {
+  const nudged = (code) => db.prepare(`UPDATE items SET last_nudged='2026-10-16T14:00:00Z', nudge_count=3 WHERE code=?`).run(code);
+  // A move, cut page read first (dropped, then reopened) and paste page read first (carried): the same due date
+  // either way, so the nudges stand either way.
+  for (const cutFirst of [true, false]) {
+    db.exec('DELETE FROM item_mentions; DELETE FROM items;');
+    const q = page(), p = page();
+    await apply(q, result([item('Call the invented office', { due: '2026-10-14' }), item('Stay on this page')], { page_date: '2026-10-14' }));
+    nudged(1);
+    const cut = () => apply(q, result([item('Stay on this page', { existing_item_id: byCode(2).id })], { page_date: '2026-10-14' }));
+    const paste = () => apply(p, result([item('Call the invented office', { due: '2026-10-14' })], { page_date: '2026-10-16' }));
+    if (cutFirst) { await cut(); await paste(); } else { await paste(); await cut(); }
+    assert.deepEqual([byCode(1).status, byCode(1).nudge_count], ['open', 3], cutFirst ? 'cut page first' : 'paste page first');
+  }
+  const p = db.prepare('SELECT * FROM pages ORDER BY rowid DESC').get();
+  const id = byCode(1).id;
+  await apply(p, result([item('Call the invented office', { existing_item_id: id, due: '2026-10-14', due_time: '2pm' })], { page_date: '2026-10-16' }));
+  assert.deepEqual([byCode(1).due_time, byCode(1).nudge_count, byCode(1).last_nudged], ['14:00', 0, null], 'a new time');
+  nudged(1);
+  await apply(p, result([item('Call the invented office', { existing_item_id: id, due: '2026-10-20', due_time: '2pm' })], { page_date: '2026-10-16' }));
+  assert.deepEqual([byCode(1).due, byCode(1).nudge_count], ['2026-10-20', 0], 'a new date');
+});
+
+test('on a page with no written date, a time with no date doesn\'t restart the nudges as the notebook date moves', async () => {
+  const p = page();
+  const read = (fallback, extra = {}) => applyPageResult(p, result([item('Call the invented vet', { due_time: '2pm', ...extra })], { page_date: null }), fallback);
+  await read('2026-10-12');
+  db.prepare(`UPDATE items SET last_nudged='2026-10-12T19:00:00Z', nudge_count=3 WHERE code=1`).run();
+  await read('2026-10-14', { existing_item_id: byCode(1).id });
+  assert.equal(byCode(1).nudge_count, 3);
 });
 
 test('a snoozed item\'s line moved to another page stays one item, still snoozed', async () => {
@@ -202,6 +226,7 @@ test('a snoozed item\'s line moved to another page stays one item, still snoozed
   await apply(q, result([item('Call the invented lab'), item('Stay on this page')], { page_date: '2026-10-14' }));
   setItemStatus(byCode(1).id, 'snoozed', 'handwriting', null, '2999-01-01');
   await apply(q, result([item('Stay on this page', { existing_item_id: byCode(2).id })], { page_date: '2026-10-14' }));
+  assert.ok(db.prepare('SELECT gone_at FROM item_mentions WHERE item_id=? AND page_id=?').get(byCode(1).id, q.id).gone_at, 'its line left q');
   await apply(p, result([item('Call the invented lab')], { page_date: '2026-10-15' }));
   assert.deepEqual(items().map((i) => [i.code, i.status]), [[1, 'snoozed'], [2, 'open']]);
 });
@@ -223,9 +248,124 @@ test('a moved line that is ticked closes its item; one erased days ago is a new 
   await apply(p, result([item('Renew the invented permit', { status: 'done' })]));
   assert.deepEqual([items().length, byCode(1).status, byCode(1).closed_by], [2, 'done', 'handwriting']);
   assert.deepEqual(statusEvents(1), ['erased:open->dropped', 'handwriting:dropped->done'], 'closed straight from dropped, never reopened');
-  db.prepare(`UPDATE items SET closed_at=? WHERE code=2`).run(hoursAgo(24 * 4)); // erased 4 days ago
+  leftAgo(2, 24 * 4); // erased 4 days ago
   await apply(p, result([item('Renew the invented permit', { status: 'done', existing_item_id: byCode(1).id }), item('Fix the invented gate')]));
   assert.deepEqual(items().map((i) => [i.code, i.status]), [[1, 'done'], [2, 'dropped'], [3, 'open']], 'written again after that, it\'s new');
+});
+
+test('a task ticked, erased, and written again on its page is a new item, with the old one\'s tags', async () => {
+  const p = page();
+  await apply(p, result([item('Call the invented vet', { tags: ['farm'] })]));
+  await apply(p, result([item('Call the invented vet', { existing_item_id: byCode(1).id, status: 'done', tags: ['farm'] })]));
+  db.prepare('UPDATE items SET closed_at=? WHERE code=1').run(hoursAgo(24 * 6)); // ticked six days ago…
+  await apply(p, result([])); // …and erased to tidy the page
+  leftAgo(1, 24 * 5);
+  await apply(p, result([item('Call the invented vet', { existing_item_id: byCode(1).id })])); // written again; the model links it
+  assert.deepEqual(items().map((i) => [i.code, i.status, i.tags]), [[1, 'done', '["farm"]'], [2, 'open', '["farm"]']]);
+});
+
+test('a line a read missed, closed by number meanwhile, and read again is still the closed item', async () => {
+  const q = page(), r = page();
+  await apply(q, result([item('Send the invented minutes')], { page_date: '2026-10-14' }));
+  await apply(q, result([], { page_date: '2026-10-14' })); // a read misses the line
+  await apply(r, result([], { page_date: '2026-10-15', closes: [{ code: 1, action: 'done', snooze_until: null, evidence: '✓1' }] }));
+  leftAgo(1, 24); // the next read of q comes a day later
+  db.prepare(`UPDATE items SET closed_at=? WHERE code=1`).run(hoursAgo(2)); // and the close came after the miss
+  await apply(q, result([item('Send the invented minutes', { existing_item_id: byCode(1).id })], { page_date: '2026-10-14' }));
+  assert.deepEqual(items().map((i) => [i.code, i.status]), [[1, 'done']]);
+});
+
+test('an item reopened by hand after its line left its page isn\'t dropped again by the next read of that page', async () => {
+  const p = page();
+  await apply(p, result([item('Fix the invented latch'), item('Oil the invented hinge')]));
+  await apply(p, result([item('Oil the invented hinge', { existing_item_id: byCode(2).id })]));
+  assert.equal(byCode(1).status, 'dropped');
+  setItemStatus(byCode(1).id, 'open', 'ui');
+  await apply(p, result([item('Oil the invented hinge', { existing_item_id: byCode(2).id }), item('Paint the invented door')]));
+  assert.deepEqual([byCode(1).status, statusEvents(1)], ['open', ['erased:open->dropped', 'ui:dropped->open']]);
+});
+
+test('a ticked line without its id is the page\'s open item with those words, not a done one already linked', async () => {
+  const p = page();
+  await apply(p, result([item('Check the invented bin temps', { status: 'done' })])); // last week's, ticked
+  const old = byCode(1).id;
+  await apply(p, result([item('Check the invented bin temps', { existing_item_id: old, status: 'done' }), item('Check the invented bin temps')]));
+  assert.deepEqual(items().map((i) => [i.code, i.status]), [[1, 'done'], [2, 'open']], 'this week\'s');
+  await apply(p, result([item('Check the invented bin temps', { existing_item_id: old, status: 'done' }),
+    item('check the invented bin temps.', { status: 'done' })])); // this week's ticked, read without its id
+  assert.deepEqual(items().map((i) => [i.code, i.status, i.closed_by]), [[1, 'done', 'handwriting'], [2, 'done', 'handwriting']]);
+});
+
+test('a lone ticked line without its id, with an open and a done item of those words on the page, ticks the open one', async () => {
+  const p = page();
+  await apply(p, result([item('Check the invented bin temps', { status: 'done' }), item('Check the invented bin temps')]));
+  assert.deepEqual(items().map((i) => i.status), ['done', 'open']);
+  await apply(p, result([item('Check the invented bin temps', { status: 'done' })])); // one ticked line read, no id
+  assert.deepEqual(items().map((i) => [i.status, i.closed_by]), [['done', 'handwriting'], ['done', 'handwriting']], 'not dropped as erased');
+});
+
+test('two ticked lines of the same words: one linked by id, the other matched in code to the other item', async () => {
+  const p = page();
+  await apply(p, result([item('Clean the invented gutters', { status: 'done' }), item('Clean the invented gutters', { status: 'done' })]));
+  const [first, second] = items().map((i) => i.id);
+  await apply(p, result([item('Clean the invented gutters', { status: 'done', existing_item_id: first }), item('Clean the invented gutters', { status: 'done' })]));
+  assert.deepEqual(db.prepare('SELECT item_id FROM item_mentions WHERE page_id=? AND gone_at IS NULL ORDER BY item_id').all(p.id).map((m) => m.item_id),
+    [first, second].sort(), 'both lines still on the page');
+});
+
+test('an old line of a moved item, read again ticked or struck on its old page, changes nothing', async () => {
+  const q = page(), p = page();
+  await apply(q, result([item('Haul the invented gravel'), item('Stay on this page')], { page_date: '2026-10-14' }));
+  await apply(q, result([item('Stay on this page', { existing_item_id: byCode(2).id })], { page_date: '2026-10-14' }));
+  await apply(p, result([item('Haul the invented gravel')], { page_date: '2026-10-15' })); // moved to p
+  await apply(q, result([item('Stay on this page', { existing_item_id: byCode(2).id }),
+    item('Haul the invented gravel', { existing_item_id: byCode(1).id, status: 'dropped' })], { page_date: '2026-10-14' }));
+  assert.deepEqual([items().length, byCode(1).status], [2, 'open']);
+});
+
+test('a snoozed task written again on a page while its line is still elsewhere is a new, visible item', async () => {
+  const mon = page();
+  await apply(mon, result([item('Call Tom about the invented letter')], { page_date: '2026-10-13' }));
+  setItemStatus(byCode(1).id, 'snoozed', 'handwriting', null, '2999-01-01');
+  await apply(page(), result([item('Call Tom about the invented letter', { due_time: '2pm' })], { page_date: '2026-10-15' }));
+  assert.deepEqual(items().map((i) => [i.code, i.status]), [[1, 'snoozed'], [2, 'open']]);
+});
+
+test('an item whose snooze is over is dropped when its line is erased, like an open one', async () => {
+  const p = page();
+  await apply(p, result([item('Order the invented tags')]));
+  setItemStatus(byCode(1).id, 'snoozed', 'handwriting', null, '2000-01-01');
+  await apply(p, result([]));
+  assert.deepEqual([byCode(1).status, byCode(1).closed_by], ['dropped', 'erased']);
+});
+
+test('an item a person dropped stays dropped while its line stays on the page, however long', async () => {
+  const p = page();
+  await apply(p, result([item('Book the invented hall')]));
+  setItemStatus(byCode(1).id, 'dropped', 'ui');
+  db.prepare('UPDATE items SET closed_at=? WHERE code=1').run(hoursAgo(48));
+  await apply(p, result([item('Book the invented hall', { existing_item_id: byCode(1).id })]));
+  assert.deepEqual(items().map((i) => [i.code, i.status]), [[1, 'dropped']]);
+});
+
+test('a ticked line moved to another page is its done item, not a new one', async () => {
+  const q = page(), p = page();
+  await apply(q, result([item('Wash the invented truck', { status: 'done' }), item('Stay on this page')], { page_date: '2026-10-14' }));
+  await apply(q, result([item('Stay on this page', { existing_item_id: byCode(2).id })], { page_date: '2026-10-14' })); // lassoed off
+  await apply(p, result([item('Wash the invented truck', { status: 'done' })], { page_date: '2026-10-15' }));
+  assert.deepEqual(items().map((i) => [i.code, i.status]), [[1, 'done'], [2, 'open']]);
+});
+
+test('a page emptied (blank, or deleted) drops its open items with no line left elsewhere', () => {
+  const p = page(), other = page();
+  return (async () => {
+    await apply(p, result([item('Sweep the invented shed'), item('Carried along')], { page_date: '2026-10-14' }));
+    await apply(other, result([item('Carried along')], { page_date: '2026-10-15' }));
+    const dropped = pageEmptied(p.id);
+    assert.deepEqual(dropped, [byCode(1).id]);
+    assert.deepEqual(items().map((i) => [i.code, i.status]), [[1, 'dropped'], [2, 'open']]);
+    assert.deepEqual(pageEmptied(p.id), [], 'and again: nothing more to drop');
+  })();
 });
 
 test('a line for an item dropped by hand is new, however soon it\'s written', async () => {

@@ -35,9 +35,9 @@ not on the sheet. The sheet is replaced every morning and its annotations are no
 | `14 → Fri` · `snooze 14 10/23` | Item 14 hidden until then |
 
 Rewriting the same item on a new day is fine. Gleaner links it to the original and counts the days you've carried it.
-Moving a line to another page (lasso, cut and paste, or striking it out and writing it again) keeps its number too,
-as long as it's on the new page by the next sync (within a few hours). A task you erase when it's done and write again
-the next day is a new item each day.
+Moving a line to another page (lasso, or cut and paste) keeps its number too, as long as it's on the new page by the
+next sync (within a few hours). Striking a line through cancels it, so a struck line written again elsewhere is a new
+item. A task you tick or erase when it's done and write again later is a new item each time.
 At 3+ days, the Today sheet calls it out.
 
 Anything you set with **Edit** in the browser (text, due date and time, assignee) wins over the page from then on:
