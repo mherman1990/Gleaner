@@ -1,65 +1,14 @@
 import Database from 'better-sqlite3';
 import crypto from 'node:crypto';
 import { paths, localDate, normTime } from './config.js';
+import { migrate } from './migrations/index.js';
+import { resolvePerson } from './registry.js';
 
 export const db = new Database(paths.db);
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
-db.exec(`
-CREATE TABLE IF NOT EXISTS documents (
-  id TEXT PRIMARY KEY, name TEXT, folder TEXT, modified TEXT, version TEXT, last_pulled TEXT
-);
-CREATE TABLE IF NOT EXISTS pages (
-  id TEXT PRIMARY KEY,                 -- tablet page uuid
-  doc_id TEXT REFERENCES documents(id),
-  page_index INTEGER,
-  rm_hash TEXT,                        -- sha256 of the .rm bytes (change detection)
-  transcribed_hash TEXT,               -- rm_hash the current transcription reflects
-  status TEXT DEFAULT 'new',           -- new | rendered | queued | transcribed | blank | error
-  png_path TEXT, typed_text TEXT,
-  page_date TEXT, summary TEXT, tags TEXT, transcription_md TEXT, legibility TEXT, uncertain TEXT,
-  batch_id TEXT, error TEXT, updated_at TEXT
-);
-CREATE TABLE IF NOT EXISTS items (
-  id TEXT PRIMARY KEY,
-  code INTEGER UNIQUE,                 -- short number printed on the Today sheet; write "✓14" to close
-  text TEXT NOT NULL,
-  kind TEXT NOT NULL,                  -- action | followup | waiting | decision | idea | question
-  person TEXT, due TEXT, priority INTEGER DEFAULT 0, tags TEXT,
-  due_time TEXT,                       -- HH:MM local, only with due
-  assignee TEXT,                       -- who it's assigned to; null = Matt
-  edited TEXT,                         -- JSON list of fields set by hand, which re-transcription leaves alone
-  status TEXT NOT NULL DEFAULT 'open', -- open | done | dropped | snoozed
-  snooze_until TEXT,
-  first_page_id TEXT, last_page_id TEXT,
-  first_seen TEXT, last_seen TEXT,     -- page dates
-  carry_days INTEGER DEFAULT 1,        -- distinct page-dates it has been written on
-  closed_at TEXT, closed_by TEXT, close_evidence TEXT,
-  last_nudged TEXT, nudge_count INTEGER DEFAULT 0
-);
-CREATE TABLE IF NOT EXISTS item_mentions (
-  item_id TEXT REFERENCES items(id) ON DELETE CASCADE, page_id TEXT, page_date TEXT,
-  PRIMARY KEY (item_id, page_id)
-);
-CREATE TABLE IF NOT EXISTS batches (
-  id TEXT PRIMARY KEY, kind TEXT, status TEXT, created_at TEXT, ended_at TEXT
-);
-CREATE TABLE IF NOT EXISTS runs (
-  id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, started_at TEXT, ended_at TEXT, ok INTEGER, detail TEXT
-);
-CREATE TABLE IF NOT EXISTS usage (
-  id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT, model TEXT, purpose TEXT, batch INTEGER,
-  input_tokens INTEGER, output_tokens INTEGER, cache_read INTEGER, cache_write INTEGER
-);
-CREATE INDEX IF NOT EXISTS idx_items_status ON items(status);
-CREATE INDEX IF NOT EXISTS idx_pages_status ON pages(status);
-`);
-
-// Columns added after v0.1.2. CREATE TABLE IF NOT EXISTS leaves an existing table alone, so add them to it here.
-for (const [table, col] of [['items', 'due_time'], ['items', 'assignee'], ['items', 'edited']]) {
-  if (!db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} TEXT`);
-}
+migrate(db);
 
 export const now = () => new Date().toISOString();
 export const newId = (p = 'it') => `${p}_${crypto.randomBytes(5).toString('hex')}`;
@@ -109,14 +58,15 @@ export function setItemStatus(id, status, by, evidence = null, snoozeUntil = nul
     .run(status, snoozeUntil, closing ? now() : null, closing ? by : null, closing ? evidence : null, id).changes;
 }
 
-export const EDITABLE = ['text', 'due', 'due_time', 'assignee'];
+export const EDITABLE = ['text', 'due', 'due_time', 'person', 'assignee'];
 /** A real calendar date as YYYY-MM-DD (Date.parse alone accepts 2026-02-31). */
 export const isDate = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s || '') && !Number.isNaN(Date.parse(s)) && new Date(`${s}T12:00:00Z`).toISOString().startsWith(s);
 const blank = (v) => v === null || v === undefined || String(v).trim() === '';
 
 /**
  * A hand edit from the UI, API, or CLI. changes holds any of: text; due (YYYY-MM-DD, or null to clear it and its
- * time); due_time ("14:00", "2pm", or null; with no due date it means today); assignee (a name, or null for Matt).
+ * time); due_time ("14:00", "2pm", or null; with no due date it means today); person (the counterpart, or null);
+ * assignee (a name, or null for Matt). Names go through the registry like transcribed ones ("Pat" → "Pat Example").
  * Each field that changes is recorded in items.edited, so re-transcribing the page never overwrites it. A new due
  * date or time resets the nudge count. Throws on invalid input. Returns the fields that changed.
  */
@@ -142,13 +92,16 @@ export function editItem(id, changes) {
     }
     next.due_time = t;
   }
-  if ('assignee' in changes) next.assignee = blank(changes.assignee) ? null : String(changes.assignee).trim().slice(0, 60);
+  for (const k of ['person', 'assignee']) {
+    if (k in changes) next[k] = blank(changes[k]) ? null : resolvePerson(String(changes[k]).trim().slice(0, 60)).name;
+  }
 
   const changed = Object.keys(next).filter((k) => next[k] !== cur[k]);
   if (!changed.length) return [];
   const edited = [...new Set([...P(cur.edited), ...changed])];
   const reset = changed.includes('due') || changed.includes('due_time');
   db.prepare(`UPDATE items SET ${changed.map((k) => `${k}=@${k}`).join(', ')}, edited=@edited
-    ${reset ? ', last_nudged=NULL, nudge_count=0' : ''} WHERE id=@id`).run({ ...next, edited: J(edited), id });
+    ${reset ? ', last_nudged=NULL, nudge_count=0' : ''} WHERE id=@id`)
+    .run({ ...next, edited: J(edited), id });
   return changed;
 }

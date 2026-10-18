@@ -10,13 +10,16 @@
 //   done <code> | drop <code> | snooze <code> <YYYY-MM-DD> | reopen <code>
 //   due <code> <YYYY-MM-DD> [time] | due <code> none     set or clear the due date and time (14:00, 2pm)
 //   assign <code> <name> | assign <code> none
+//   registry check [file]   validate a projects.yaml (default: the one in use) before deploying it
 import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
 import { config } from './config.js';
 import { db, setItemStatus, editItem, listItems } from './db.js';
 import { source } from './adapters/index.js';
 import { ingest, markForRetranscription } from './pipeline/ingest.js';
 import { morningDigest, reminderSweep, weeklyReview } from './digest/digest.js';
 import { renderOpenLoops, refreshItemOutputs, itemLine } from './output/markdown.js';
+import { parseRegistry, registryStatus } from './registry.js';
 
 const [cmd, ...args] = process.argv.slice(2);
 const flag = (f) => args.includes(f);
@@ -32,6 +35,7 @@ async function main() {
       const out = { config: { source: config.source.adapter, folder: config.source.folder, llm: config.llm.mode, models: { t: config.llm.transcribeModel, d: config.llm.digestModel, w: config.llm.weeklyModel, h: config.llm.triageModel }, taskLists: config.notebooks.taskLists } };
       try { out.rmc = execFileSync('rmc', ['--version']).toString().trim(); } catch (e) { out.rmc = `missing: ${e.message}`; }
       out.apiKey = !!process.env.ANTHROPIC_API_KEY;
+      out.registry = registryStatus();
       out.source = await source().doctor().catch((e) => ({ error: e.message }));
       console.log(JSON.stringify(out, null, 2));
       break;
@@ -61,6 +65,21 @@ async function main() {
       console.log(`#${args[0]} → ${cmd}`);
       break;
     }
+    case 'registry': {
+      if (args[0] !== 'check') throw new Error('usage: registry check [file]');
+      const file = args[1] || config.registry.path;
+      try {
+        const r = parseRegistry(fs.readFileSync(file, 'utf8'));
+        console.log(JSON.stringify({ file, version: r.version, projects: r.projects.length,
+          restricted: r.projects.filter((p) => p.sensitivity === 'restricted').map((p) => p.tag),
+          people: r.people.length, contexts: r.contexts, warnings: r.warnings }, null, 2));
+      } catch (e) {
+        console.error(`${file} is not valid:\n${(e.errors || [e.message]).map((x) => `  - ${x}`).join('\n')}` +
+          `${e.warnings?.length ? `\nwarnings (a typo here may explain an error):\n${e.warnings.map((x) => `  - ${x}`).join('\n')}` : ''}`);
+        process.exitCode = 1;
+      }
+      break;
+    }
     case 'due': case 'assign': {
       const item = itemByCode(args[0]);
       const rest = args.slice(1);
@@ -73,7 +92,7 @@ async function main() {
       break;
     }
     default:
-      console.log('usage: gleaner doctor | ingest [--sync] | digest [--push] | remind | weekly [--push] | items [snoozed|closed|all] | retranscribe all|YYYY-MM-DD|"<notebook>" | done N | drop N | snooze N YYYY-MM-DD | reopen N | due N YYYY-MM-DD [time] | due N none | assign N <name> | assign N none');
+      console.log('usage: gleaner doctor | ingest [--sync] | digest [--push] | remind | weekly [--push] | items [snoozed|closed|all] | retranscribe all|YYYY-MM-DD|"<notebook>" | done N | drop N | snooze N YYYY-MM-DD | reopen N | due N YYYY-MM-DD [time] | due N none | assign N <name> | assign N none | registry check [file]');
   }
 }
-main().then(() => process.exit(0)).catch((e) => { console.error(e.message); process.exit(1); });
+main().then(() => process.exit(process.exitCode ?? 0)).catch((e) => { console.error(e.message); process.exit(1); });

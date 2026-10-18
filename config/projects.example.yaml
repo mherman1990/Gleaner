@@ -1,0 +1,91 @@
+# Gleaner project registry: an example with made-up projects and people. The real one lives on the Pi at
+# /data/projects.yaml (~/umbrel/app-data/herman-gleaner/data/projects.yaml) and never in this repo, which is public;
+# any file named projects.yaml is git-ignored in case a working copy lands here.
+#
+# Check a file before deploying it, on the Pi:
+#   sudo docker exec herman-gleaner_web_1 node src/cli.js registry check /data/projects.yaml
+# or on any computer with Node 22 and this repo (after `npm ci`):
+#   node scripts/check-registry.mjs ~/gleaner/projects.yaml
+# Gleaner picks up a changed file on its own. A file that fails the check is ignored and the last good one stays
+# in use (it's saved next to the file as .projects.yaml.last-good).
+#
+# What each field does:
+#   tag          canonical tag, what you write after "#". Matched ignoring case and a leading "#". Write it
+#                without the "#" here (an unquoted # starts a YAML comment); a quoted "#tag" also works.
+#   aliases      other ways you write it. The transcriber and Gleaner map every alias to the tag. As with tags,
+#                write them without "#" or in quotes: an unquoted "- #kites" is a YAML comment. Values are read
+#                as written: 1.10 stays "1.10", 0707 stays "0707".
+#                A tag that matches nothing here is kept as written and listed as "unregistered" in the
+#                weekly review, so this file grows from your notes.
+#   program      groups projects (should be a key under programs:; anything else is only a warning)
+#   status       active | watch | on-hold | closed   (default active)
+#   sensitivity  normal | restricted   (required). Restricted work never reaches a normal-sensitivity client.
+#   notebook     true = Cowork keeps a project notebook for it
+#   funding      checkoff | non-checkoff | mixed | null (unknown)
+#   people       who's involved (for Cowork; free text)
+#   search       email / calendar / teams search hints for Cowork
+#
+# Validation fails only on structural problems: a missing tag, name or sensitivity; a bad status, sensitivity or
+# notebook value; a list where a single value belongs, or a single value where a list or mapping belongs; the same
+# tag or alias on two projects; a context that is also a tag or alias; a person listed twice or without a name; or
+# a write_as form claimed by two people. Warnings never fail it: a program not under programs:, an unknown funding
+# value, a key this format doesn't use (a typo such as "alias:"), an empty list entry (an unquoted "- #x"), an
+# alias or context listed twice. TODOs, "# ?" notes and null funding are fine.
+
+version: 1
+
+programs:
+  north:
+    name: Northern program
+  south:
+    name: Southern program
+
+projects:
+  - tag: kite-study
+    name: Kite aerodynamics study
+    aliases: [kites, ks]
+    program: north
+    status: active
+    sensitivity: normal
+    notebook: true
+    funding: null            # ? fill in
+    people: [Pat Example]
+    search:
+      email: ["kite study"]
+      calendar: ["kites"]
+      teams: []
+
+  - tag: canal-bill
+    name: Canal access bill
+    aliases: [canal, 12.40]  # a section number: kept as "12.40"
+    program: south
+    status: watch
+    sensitivity: normal
+    notebook: false
+    funding: non-checkoff
+    people: []
+    search: {email: ["canal access"], calendar: [], teams: []}
+
+  - tag: lighthouse
+    name: Lighthouse project
+    aliases: [lh]
+    program: south
+    status: active
+    sensitivity: restricted  # never in notebooks, memos, or anything shared
+    notebook: false
+    funding: null
+    people: []
+    search: {email: [], calendar: [], teams: []}
+
+# Short forms you write for people. "Pat" becomes "Pat Example". A bare first name shared by two people
+# (here "Alex") stays as written and is flagged person_ambiguous instead of guessed.
+people:
+  - name: Pat Example
+    write_as: [Pat]
+  - name: Alex One
+    write_as: [Alex O]
+  - name: Alex Two
+    write_as: [Alex T]
+
+# Context tags: where or how something gets done, not projects. Kept as tags, never given a notebook.
+contexts: [phone, desk, later]

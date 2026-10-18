@@ -6,6 +6,7 @@
 // Every property is required, and a field that may be absent is nullable (anyOf with null) instead of
 // optional, so the shape the code reads never varies. test/llm.test.js checks these rules.
 import { config } from '../config.js';
+import { currentRegistry, promptBlock } from '../registry.js';
 
 const nullable = (schema) => ({ anyOf: [schema, { type: 'null' }] });
 const DATE = { type: 'string', format: 'date' };
@@ -33,7 +34,8 @@ HANDWRITING NOTATION (the writer uses these conventions; they are the main signa
 - A struck-through line = the writer cancelled it; do not create an item for it.
 `.trim();
 
-export function transcribeSystem() {
+/** The static system prompt. It changes only with the registry file, so prompt caching keeps working. */
+export function transcribeSystem(r = currentRegistry()) {
   return `You transcribe handwritten pages from a reMarkable tablet for one person: Matt, an agriculture policy
 executive who also farms. Pages are mostly meeting notes, call notes, daily plans, and running task lists.
 Expect domain vocabulary: RFS, RVO, SRE, 45Z, CI score, GREET, ILUC, GTAP, FIFRA, PULA, EPA, USDA, Treasury,
@@ -66,11 +68,18 @@ ITEM EXTRACTION RULES
   updated, not duplicated; otherwise null.
 - Use closes[] only for explicit number references ("✓14" etc.) or a checked box on a line matching an open item.
   snooze_until is the YYYY-MM-DD date for a snooze and null otherwise.
-- tags: choose from this vocabulary when it fits; otherwise a short new kebab-case tag:
-  ${config.tags.join(', ')}
-
+${r ? REGISTRY_RULES : `- tags: choose from this vocabulary when it fits; otherwise a short new kebab-case tag:
+  ${config.tags.join(', ')}`}
+${r ? `\n${promptBlock(r)}\n` : ''}
 Respond with the JSON object for this page.`;
 }
+
+// With a registry: map tags and names onto it. Unknown tags and names are kept as written; code re-checks both.
+const REGISTRY_RULES = `- tags (page and item): use the canonical tag from PROJECT TAGS, mapping any alias or variant to it, or a
+  CONTEXT TAG. Tag only what the page marks (#tag, a circled word) or what plainly belongs to a listed project.
+  A #tag or circled word that matches nothing listed: keep it exactly as written.
+- person and assignee: when a name matches a form under PEOPLE, write that person's full name. A bare first name
+  that fits more than one listed person stays exactly as written: never guess which one is meant.`;
 
 export function openLoopsBlock(items) {
   if (!items.length) return 'OPEN ITEMS (by number): none.';

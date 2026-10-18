@@ -19,6 +19,7 @@
     "better-sqlite3": "13.0.3",
     "express": "4.22.3",
     "node-cron": "4.6.0",
-    "pdfkit": "0.20.2"
+    "pdfkit": "0.20.2",
+    "yaml": "2.9.1"
   }
 }

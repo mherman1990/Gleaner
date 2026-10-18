@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import { config, localDate, isTaskList } from '../config.js';
+import { registryStatus } from '../registry.js';
 import { db, now, sha256, startRun, endRun, openItems } from '../db.js';
 import { source } from '../adapters/index.js';
 import { renderPage } from './render.js';
@@ -136,6 +137,8 @@ async function collectPending() {
 export async function ingest({ mode = 'batch' } = {}) {
   const runId = startRun(`ingest:${mode}`);
   try {
+    const reg = registryStatus();
+    log(`registry ${reg.loaded ? `${reg.version} (${reg.projects} projects)` : 'none'}${reg.errors ? ` — ${reg.path} rejected: ${reg.errors.join('; ')}` : ''}`);
     const dates = await collectPending();
     const pulled = await pullAndRender();
     const rows = db.prepare(`SELECT * FROM pages WHERE status IN ('rendered','error') AND png_path IS NOT NULL`).all();
@@ -175,7 +178,7 @@ export async function ingest({ mode = 'batch' } = {}) {
 
     writeDayFiles([...dates]);
     writeOpenLoops();
-    const detail = { ...pulled, pages: rows.length, ...tally, dates: [...dates] };
+    const detail = { ...pulled, pages: rows.length, ...tally, dates: [...dates], registry: reg.version };
     log(detail);
     endRun(runId, true, detail);
     return detail;

@@ -23,8 +23,19 @@ Read README.md for setup and docs/HANDWRITING.md for the notation the extractor 
   - Items carry `due` + `due_time` (HH:MM local) and `assignee` (null = Matt). The model reads them from the page
     (`2pm`, `@Jen`). A hand edit (`editItem()` in `src/db.js`, used by the UI, API and CLI) records the field in
     `items.edited`, and `refreshItem` never overwrites an edited field. Due date and time count as one field.
-  - Columns added after v0.1.2 are added at startup in `src/db.js` (`ALTER TABLE … ADD COLUMN`), since there is no
-    migration runner. `test/migrate.test.js` opens a v0.1.2 database.
+  - Tags and people go through the project registry (`src/registry.js` loads `/data/projects.yaml`;
+    `src/registry-schema.js` holds the format rules and lookups with no I/O; example in
+    `config/projects.example.yaml`). It's read with YAML's failsafe schema, so every value is the text written.
+    Aliases are stored as canonical tags (a leading `#` in the file is dropped); unknown tags are kept as written.
+    A shared first name is stored as written, and a re-read never replaces a stored registry person with their own
+    first name. `unregistered_tags` and `person_ambiguous` are not stored: the API works them out from the stored
+    tags and names against the current registry, so they never go stale. The registry is in the cached
+    transcription prompt and reloads when the file changes (stat incl. ctime). Every valid version is saved as
+    `.projects.yaml.last-good`, which a broken file falls back to in any process; unknown keys only warn.
+    **Never commit Matt's `projects.yaml`:** this repo is public and the file names colleagues and restricted work.
+- **Schema changes are numbered migrations** in `src/migrations/` (runner in `index.js`, recorded in
+  `schema_migrations`). They only add things; never edit one that has shipped. `001-baseline-v0.1.4` is the schema
+  from before the runner. `test/migrate.test.js` runs every migration against `test/fixtures/v0.1.4.sql`.
 - **Markdown in `notes/` is generated** from SQLite and is idempotent. Never treat it as input.
 - **Model tiering:** Sonnet transcribes, Haiku dedupes, Sonnet writes the daily plan, Opus writes the weekly review.
   Structured output uses `output_config.format` JSON schemas (`structuredParams` / `structuredOutput` in
@@ -46,7 +57,10 @@ Read README.md for setup and docs/HANDWRITING.md for the notation the extractor 
   `check-store.mjs` over every app folder, so `herman-gleaner/` must keep passing it (`test/store.test.js` enforces this;
   `scripts/check-store.mjs` is a verbatim copy of Spotter's). `/api/*` skips Umbrel login, so it stays disabled
   without `GLEANER_API_TOKEN`.
-- Tests: `npm test` (node:test, mock LLM, temp data dirs). The end-to-end tests need `rmc` and `cairosvg` on PATH
+- **v0.2 work follows `docs/IMPLEMENTATION_PLAN.md`** (one PR per spec step, each with its acceptance test). Steps
+  that need Matt's hands (tokens, keys, Telegram/Signal, OpenClaw, Tailscale, Cowork) go in `docs/RUNBOOK_v0.2.md`.
+- Tests: `npm test` (node:test, mock LLM, temp data dirs). Tests that need the real request shape point the SDK at
+  `test/fakes/anthropic.js` (`ANTHROPIC_BASE_URL`), which also reports prompt-cache reads. Fixture content is invented. The end-to-end tests need `rmc` and `cairosvg` on PATH
   and skip without them. Run it before every push; CI runs it plus an image build on each PR.
 - Offline test loop: `GLEANER_SOURCE=fixture GLEANER_LLM=mock GLEANER_DATA_DIR=./.testdata GLEANER_FIXTURE_DIR=./fixtures node src/cli.js ingest`.
   Fixture layout is `fixtures/<Notebook>/<NN>.rm`; the committed pages come from ricklupton/rmc `tests/rm/` (MIT).

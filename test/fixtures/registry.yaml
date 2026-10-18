@@ -1,0 +1,71 @@
+# An invented project registry for tests. Every program, tag, alias, name and search hint here is made up.
+version: 1
+
+programs:
+  alpha:
+    name: Program Alpha
+    description: "TODO: confirm scope"   # ? left open on purpose: TODOs never fail validation
+  beta:
+    name: Program Beta
+
+projects:
+  - tag: widget-report
+    name: Widget emissions report
+    aliases: [wr, gizmo, sprocket-study]
+    program: alpha
+    status: active
+    sensitivity: normal
+    notebook: true
+    funding: null            # unknown funding is allowed
+    people: [Pat Example]
+    search:
+      email: ["widget report"]
+      calendar: ["widgets"]
+      teams: []
+
+  - tag: bridge-permit
+    name: Bridge permit bill
+    aliases: [404, 1.10, 0707, bp]   # numbers are kept exactly as written
+    program: beta
+    status: active
+    sensitivity: normal
+    notebook: true
+    funding: non-checkoff    # ?
+    people: [Sam Fixture]
+    search: {email: ["bridge permit"], calendar: [], teams: []}
+
+  - tag: moonbase
+    name: Moonbase planning
+    aliases: [mb, lunar]
+    program: beta
+    status: active
+    sensitivity: restricted
+    notebook: false
+    funding: null
+    people: []
+    search: {email: [], calendar: [], teams: []}
+
+  - tag: orchard
+    name: A project in a program that isn't listed
+    aliases: []
+    program: gamma           # ? not under programs: a warning, not an error
+    status: watch
+    sensitivity: normal
+    notebook: false
+    funding: null
+    people: []
+    search: {email: [], calendar: [], teams: []}
+
+people:
+  - name: Pat Example
+    write_as: [Pat]
+  - name: Alex One
+    write_as: [Alex O]
+  - name: Alex Two
+    write_as: [Alex T]
+  - name: Sam Fixture
+    write_as: [Sam]
+  - name: Robin Fixture   # a first name no one else has, and not a write_as form
+    write_as: [RF]
+
+contexts: [phone, desk, later]
