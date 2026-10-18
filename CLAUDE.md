@@ -81,6 +81,9 @@ Verified live on Matt's Pi (v0.1.0, 2026-10-17):
 - The first live transcription failed: v0.1.0 forced `tool_choice`, which Sonnet 5.5 rejects. v0.1.1 uses structured outputs,
   and a live sync transcription with Sonnet 5.5 succeeded. On v0.1.2, `retranscribe "To do"` turned that page's two lines into items.
 - The Release workflow's store sync: v0.1.1 (after a re-run, since `STORE_REPO` was created mid-run) and v0.1.2 (automatic).
+- v0.1.4 (2026-10-18): the startup migration on the live database, `GLEANER_TABLET_SHEET=false`, and a live sync read
+  of 2 changed pages that created 2 items. That read took 5½ minutes end to end, so *Ingest now* must wait for the
+  run rather than refresh after a fixed delay. The log now times each page's render and transcription.
 
 Verified against ddvk/rmapi v0.0.35's source:
 - `rmapi -ni -json find /Daily` prints a JSON array of `{id, name, type, version, modifiedClient, parent, tags, …}`.
@@ -105,10 +108,12 @@ Not yet verified, in priority order:
      prefixes from 512 tokens, and the transcription system prompt is about 1,200, so it should cache. The dedupe,
      digest, and weekly prompts are far shorter and don't; a prefix under the minimum fails silently, not with an error.
 2. **rmapi over time.** Confirm that a page edited on the tablet is picked up on the next run.
-3. **On the Pi itself.** Check render time per page and memory use during a batch.
+3. **On the Pi itself.** Render and transcription time per page are in the log (`docker logs herman-gleaner_web_1 | grep
+   '\[ingest\]'`). The first live read averaged about 2½ minutes per page; find out which step dominates. Also check
+   memory use during a batch.
 4. **Umbrel.** Confirm that `PROXY_AUTH_WHITELIST` lets nested paths like `/api/items/14` through, as it does `/api/status`.
    Other store apps (e.g. Bazarr) rely on `"/api/*"` for nested APIs, so this should hold.
-5. **v0.1.3 on the Pi.** The startup migration on the live database, and the model reading `2pm` / `@Name` from real pages.
+5. **Due times and assignees from real pages.** The model reading `2pm` / `@Name` from Matt's handwriting.
 
 ## Backlog (not v0.1)
 - Read annotations on the `_Today` PDF by compositing strokes over the rendered PDF page, so ticks on the sheet close items.

@@ -10,6 +10,7 @@ import { writeDayFiles, writeOpenLoops, mentionDates } from '../output/markdown.
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (...a) => console.log('[ingest]', ...a);
+const secs = (t0) => `${((Date.now() - t0) / 1000).toFixed(1)}s`;
 
 /** Step 1–2: pull changed documents, hash pages, render what changed. Returns # pages ready. */
 async function pullAndRender() {
@@ -19,7 +20,9 @@ async function pullAndRender() {
   for (const d of docs) {
     const known = d.id && db.prepare('SELECT version FROM documents WHERE id=?').get(d.id);
     if (known && d.version && known.version === d.version) continue; // unchanged since last pull
+    const t0 = Date.now();
     const bundle = await src.pull(d);
+    log(`pulled ${d.name} in ${secs(t0)}`);
     db.prepare(`INSERT INTO documents (id, name, folder, modified, version, last_pulled) VALUES (?,?,?,?,?,?)
       ON CONFLICT(id) DO UPDATE SET name=excluded.name, folder=excluded.folder, modified=excluded.modified, version=excluded.version, last_pulled=excluded.last_pulled`)
       .run(bundle.id, bundle.name, bundle.folder, bundle.modified, bundle.version, now());
@@ -30,7 +33,9 @@ async function pullAndRender() {
       const row = db.prepare('SELECT rm_hash, transcribed_hash, status FROM pages WHERE id=?').get(p.id);
       if (row && row.transcribed_hash === hash) continue;           // already transcribed this exact ink
       if (row && row.rm_hash === hash && row.status === 'queued') continue; // already in a batch
+      const tRender = Date.now();
       const r = await renderPage(p);
+      log(`rendered ${bundle.name} p${p.index + 1} in ${secs(tRender)}`);
       db.prepare(`INSERT INTO pages (id, doc_id, page_index, rm_hash, status, png_path, typed_text, updated_at) VALUES (?,?,?,?,?,?,?,?)
         ON CONFLICT(id) DO UPDATE SET page_index=excluded.page_index, rm_hash=excluded.rm_hash, status=excluded.status,
           png_path=excluded.png_path, typed_text=excluded.typed_text, batch_id=NULL, updated_at=excluded.updated_at`)
@@ -158,9 +163,11 @@ export async function ingest({ mode = 'batch' } = {}) {
       }
     } else if (rows.length) {
       const results = new Map();
-      for (const r of rows) {
+      for (const [i, r] of rows.entries()) {
+        const t0 = Date.now();
         try { results.set(r.id, { ok: true, input: await callStructured(buildParams(r, loops), 'transcribe') }); }
         catch (e) { results.set(r.id, { ok: false, error: e.message }); }
+        log(`transcribed page ${i + 1}/${rows.length} in ${secs(t0)}${results.get(r.id).ok ? '' : ' (failed)'}`);
       }
       const out = await applyAll(rows, results);
       out.dates.forEach((d) => dates.add(d)); tally = out.tally;

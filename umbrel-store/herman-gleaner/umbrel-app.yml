@@ -4,7 +4,7 @@ name: Gleaner
 tagline: Handwritten reMarkable notes become an open-loop task list
 icon: https://raw.githubusercontent.com/mherman1990/spotter-umbrel-store/main/herman-gleaner/icon.svg
 category: productivity
-version: "0.1.4"
+version: "0.1.5"
 port: 3717
 description: >-
   Gleaner reads the notebooks in one folder of your reMarkable (/Daily by
@@ -53,10 +53,9 @@ backupIgnore:
   - data/raw/*
   - data/renders/*
 releaseNotes: >-
-  Notebooks are now also read every two hours on weekdays (8am to 4pm), so
-  what you write shows up the same day. A due nudge only counts once Teams
-  or ntfy accepted it. Also in this update if you skipped 0.1.3: due times
-  and assignees, an Edit button, Undo after Done/Snooze/Drop, and Reopen for
-  snoozed and closed items.
+  Ingest now waits for the read to finish and says what it found: pages
+  read, new items, and how long it took. A read in progress no longer shows
+  as FAILED. The log now records how long each page takes to render and to
+  transcribe.
 submitter: Matt Herman
 submission: https://github.com/mherman1990/Gleaner
