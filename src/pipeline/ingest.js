@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { config, localDate } from '../config.js';
+import { config, localDate, isTaskList } from '../config.js';
 import { db, now, sha256, startRun, endRun, openItems } from '../db.js';
 import { source } from '../adapters/index.js';
 import { renderPage } from './render.js';
@@ -57,8 +57,30 @@ function buildParams(pageRow, loopsBlock) {
       docName: doc?.name || 'notebook', pageIndex: pageRow.page_index, dateHint,
       typedText: pageRow.typed_text, priorItems: priorItemsForPage(pageRow.id),
       imageB64: fs.readFileSync(pageRow.png_path).toString('base64'),
+      taskList: isTaskList(doc?.name),
     }),
   });
+}
+
+/**
+ * Have the next ingest read these pages again, e.g. after a prompt, model, or task-list change. Otherwise a page
+ * is only re-read when its ink changes. scope: "all", a page date (YYYY-MM-DD), or a notebook name.
+ * Clears the page and notebook fingerprints, so the next ingest re-pulls, re-renders, and re-transcribes them
+ * (renders are not backed up, so they may be gone). Returns the number of pages queued.
+ */
+export function markForRetranscription(scope) {
+  const where = scope === 'all' ? '1=1'
+    : /^\d{4}-\d{2}-\d{2}$/.test(scope) ? 'p.page_date = @scope'
+    : 'lower(trim(d.name)) = lower(trim(@scope))';
+  const pages = db.prepare(`SELECT p.id, p.doc_id FROM pages p JOIN documents d ON d.id = p.doc_id
+    WHERE ${where} AND p.status <> 'queued'`).all({ scope });
+  const clearPage = db.prepare('UPDATE pages SET rm_hash=NULL, transcribed_hash=NULL WHERE id=?');
+  const clearDoc = db.prepare('UPDATE documents SET version=NULL WHERE id=?');
+  db.transaction(() => {
+    for (const p of pages) clearPage.run(p.id);
+    for (const id of new Set(pages.map((p) => p.doc_id))) clearDoc.run(id);
+  })();
+  return pages.length;
 }
 
 async function applyAll(rows, results) {

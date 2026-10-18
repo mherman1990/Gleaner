@@ -48,8 +48,16 @@ On the tablet, create a `/Daily` folder and keep daily notebooks in it. See `doc
 |---|---|
 | Tablet | Write `✓14` / `x14` / `14 → Fri` on today's page; it's applied that night |
 | Browser | Umbrel → Gleaner: open loops with Done / Fri / Drop buttons, plus *Ingest now* |
-| CLI | `node src/cli.js done 14` · `snooze 14 2026-10-23` · `items` · `digest --push` |
+| CLI | `node src/cli.js done 14` · `snooze 14 2026-10-23` · `items` · `digest --push` · `retranscribe "To do"` |
 | Claude | Ask in Cowork. Desktop Commander can `curl` `/api/items`, `/api/notes`, `/api/search?q=`, and `POST /api/items/14 {"status":"done"}` |
+
+**Task-list notebooks.** In notebooks listed under `notebooks.taskLists` in `config.json` (default `["To do"]`),
+every written line is a to-do, with or without the notation. Elsewhere only marked lines become items.
+
+**Re-reading pages.** A page is transcribed again only when its ink changes. After changing the model, the prompts,
+or `taskLists`, run `node src/cli.js retranscribe` with `all`, a date (`2026-10-17`), or a notebook name
+(`"To do"`). Items keep their numbers. Each page re-read is a new Claude call, so `all` costs what the first
+pass did.
 
 ## API (Bearer token)
 

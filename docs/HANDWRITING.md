@@ -30,3 +30,9 @@ not on the sheet. The sheet is replaced every morning and its annotations are no
 
 Rewriting the same item on a new day is fine. Gleaner links it to the original and counts the days you've carried it.
 At 3+ days, the Today sheet calls it out.
+
+## Task-list notebooks
+
+In a notebook listed as a task list (by default, the one named **To do**), every line you write is a to-do, so no
+box or arrow is needed. Headings and crossed-out lines are skipped, and a ticked line is recorded as done. The list of
+task-list notebooks is `notebooks.taskLists` in `config.json`.

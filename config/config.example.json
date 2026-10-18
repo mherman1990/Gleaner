@@ -1,5 +1,13 @@
 {
-  "source": { "adapter": "rmapi", "folder": "/Daily" },
+  "source": {
+    "adapter": "rmapi",
+    "folder": "/Daily"
+  },
+  "notebooks": {
+    "taskLists": [
+      "To do"
+    ]
+  },
   "llm": {
     "transcribeModel": "claude-sonnet-5-5",
     "triageModel": "claude-haiku-5-5",
@@ -14,6 +22,14 @@
     "reminderSweep": "*/30 7-18 * * 1-5",
     "weeklyReview": "0 18 * * 0"
   },
-  "reminders": { "staleDays": 7, "carryFlagAt": 3, "maxNudgesPerItem": 3 },
-  "notify": { "tabletTodaySheet": true, "tabletTodayFolder": "/Daily", "tabletTodayName": "_Today" }
+  "reminders": {
+    "staleDays": 7,
+    "carryFlagAt": 3,
+    "maxNudgesPerItem": 3
+  },
+  "notify": {
+    "tabletTodaySheet": true,
+    "tabletTodayFolder": "/Daily",
+    "tabletTodayName": "_Today"
+  }
 }

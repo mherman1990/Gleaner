@@ -51,6 +51,10 @@ ITEM EXTRACTION RULES
 - Extract an item only where the writer marked it with the notation above or wrote an explicit commitment
   ("I'll send...", "need to call..."). Do NOT turn ordinary notes, facts, or other people's statements into items.
   Fewer, accurate items beat many noisy ones.
+- Exception: when the page text says the notebook is a TASK LIST, every written line that reads as something to do
+  is an item (kind "action" unless the notation says otherwise), even with no box, arrow, or date. Headings, dates,
+  and crossed-out lines are still not items, and a ticked line is an item with status "done". Keep the writer's
+  wording for these; add a verb only when the meaning is unmistakable.
 - Write item text as a short imperative a reader understands out of context:
   "Send Tom the 45Z comment draft" — not "draft".
 - person = the counterpart's name as written, or null. due = YYYY-MM-DD or null. priority = true only with "!".
@@ -102,7 +106,7 @@ export const RECORD_PAGE_SCHEMA = object({
   },
 });
 
-export function transcribeUser({ docName, pageIndex, dateHint, typedText, priorItems, imageB64 }) {
+export function transcribeUser({ docName, pageIndex, dateHint, typedText, priorItems, imageB64, taskList = false }) {
   const prior = priorItems.length
     ? priorItems.map((i) => `- id=${i.id}: ${i.text} [${i.status}]`).join('\n')
     : '- none';
@@ -111,7 +115,7 @@ export function transcribeUser({ docName, pageIndex, dateHint, typedText, priorI
     {
       type: 'text',
       text: `Notebook: "${docName}", page ${pageIndex + 1}. If no date is written, the notebook was last modified ${dateHint}.
-${typedText ? `Typed text on this page (exact):\n${typedText}\n` : ''}
+${taskList ? 'This notebook is a TASK LIST: every written line that reads as something to do is an item.\n' : ''}${typedText ? `Typed text on this page (exact):\n${typedText}\n` : ''}
 ITEMS PREVIOUSLY EXTRACTED FROM THIS PAGE:
 ${prior}`,
     },

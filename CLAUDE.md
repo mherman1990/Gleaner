@@ -17,6 +17,9 @@ Read README.md for setup and docs/HANDWRITING.md for the notation the extractor 
   - Number closes (`✓14`, `x14`, `14 → Fri`) act on earlier items.
   - New items are deduped against open loops by Haiku; a match bumps `carry_days`.
   - An item that came from only one page and was erased from it is dropped.
+  - In task-list notebooks (`notebooks.taskLists`, default `["To do"]`), every written line is an item. Elsewhere
+    only the notation or an explicit commitment makes one. The rule is in the cached system prompt, and the
+    per-page flag is in the user turn.
 - **Markdown in `notes/` is generated** from SQLite and is idempotent. Never treat it as input.
 - **Model tiering:** Sonnet transcribes, Haiku dedupes, Sonnet writes the daily plan, Opus writes the weekly review.
   Structured output uses `output_config.format` JSON schemas (`structuredParams` / `structuredOutput` in
@@ -85,6 +88,8 @@ Not yet verified, in priority order:
    - Check that structured-output calls succeed on the configured models: a live `ingest --sync` with `failed: 0`. A
      page that fails keeps its reason in `pages.error`.
    - Check that the extraction isn't noisy: tune `NOTATION` and the rules in `src/llm/prompts.js` against Matt's actual pages.
+     Pages are only re-read when their ink changes, so after a tuning change run `cli.js retranscribe <scope>`.
+     The first live page (a two-line "To do" list) produced no items under the strict rules, which led to taskLists.
    - Check prompt caching hits in `/api/status` (`cache_read` > 0 on the second page of a run). The static prompt may be
      under the model's minimum cacheable length, in which case nothing caches and nothing errors.
 2. **rmapi over time.** Confirm that a page edited on the tablet is picked up on the next run.
