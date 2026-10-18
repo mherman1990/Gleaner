@@ -8,7 +8,7 @@
 // Every change here is an event by "handwriting" (an item erased from its page: "erased"); see changeItem() in db.js.
 import { db, newId, nextCode, J, P, setItemStatus, openItems, changeItem, recordEvent } from '../db.js';
 import { config, normTime, localDate } from '../config.js';
-import { currentRegistry, canonicalTags, resolvePerson, isFirstNameOf } from '../registry.js';
+import { currentRegistry, canonicalTags, resolvePerson, isFirstNameOf, tagKey } from '../registry.js';
 import { callStructured, structuredParams } from '../llm/client.js';
 import { DEDUPE_SYSTEM, MATCH_SCHEMA } from '../llm/prompts.js';
 
@@ -100,9 +100,9 @@ function refreshItem(id, it, pageDate, r, dated = true) {
   };
   const due = keepDue ? cur.due : read.due;
   const dueTime = keepDue ? cur.due_time : read.due_time;
-  // Fresh nudges for a new deadline, as for a hand edit. Not on a page with no written date: its date (the notebook's
-  // last change) moves on every read, and so would a time written without a date.
-  const newDeadline = dated && (due !== cur.due || dueTime !== cur.due_time);
+  // Fresh nudges for a new deadline, as for a hand edit. Not for a time written without a date on a page with no
+  // written date: that date (the notebook's last change) moves on every read.
+  const newDeadline = (dated || isDate(it.due)) && (due !== cur.due || dueTime !== cur.due_time);
   changeItem(id, 'handwriting', () => db.prepare(`UPDATE items SET text=@text, person=@person, assignee=@assignee,
     due=@due, due_time=@due_time, priority=@priority, tags=@tags${newDeadline ? ', last_nudged=NULL, nudge_count=0' : ''} WHERE id=@id`).run({
     id,
@@ -114,7 +114,10 @@ function refreshItem(id, it, pageDate, r, dated = true) {
     priority: Math.max(cur.priority, it.priority ? 1 : 0),
     tags: J(it.tags),
   }));
-  if ((it.status === 'done' || it.status === 'dropped') && cur.status !== it.status) setItemStatus(id, it.status, 'handwriting', 'checked on page');
+  // Ticked or struck on the page. A struck line also makes final a drop that was only its line leaving a page.
+  if (isClosed(it.status) && (cur.status !== it.status || (it.status === 'dropped' && cur.closed_by === 'erased'))) {
+    setItemStatus(id, it.status, 'handwriting', 'checked on page');
+  }
 }
 
 /**
@@ -129,35 +132,52 @@ function recentlyMoved() {
 const erasedDrop = (o) => o.status === 'dropped' && o.closed_by === 'erased';
 
 /**
- * Which new lines are the same commitment as an existing item: line index → item id. Candidates:
+ * Which new lines are the same commitment as an existing item: line index → item id. Candidates, by label:
  * - OPEN: the open loops, this page's open and snoozed items, and open or snoozed items whose line left a page in the
  *   last few hours (a line cut from one page and pasted on another is the same item, moved). Any line may match.
  * - ERASED: items dropped in the last few hours because their line left their last page: moved, too. Any line.
- * - CLOSED, offered only when a new line is ticked, and matched only by a ticked line: this page's done and dropped
- *   items, those it closed, and done or dropped items whose line left a page lately. A ticked line read again
- *   without its id is that item. An unticked line never matches one: writing a done task again is a new commitment.
+ * - CLOSED: this page's done and dropped items, and those it closed. Only a ticked line, and before an OPEN one: a
+ *   ticked line read again without its id is that item.
+ * - OTHER: done or dropped items whose line left another page lately (a ticked line moved), and snoozed items (ticked
+ *   off on another page). Only a ticked line, and only when nothing above fits.
+ * CLOSED and OTHER are offered only when a new line is ticked. An unticked line never matches a done item: writing a
+ * done task again is a new commitment.
  */
 async function matchExisting(candidates, excludeIds, pageItems) {
   const ticked = (c) => isClosed(c.status);
-  const pool = new Map(openItems().map((o) => [o.id, o]));
-  for (const o of [...pageItems, ...recentlyMoved()]) {
-    if (!isClosed(o.status) || erasedDrop(o) || candidates.some(ticked)) pool.set(o.id, o);
-  }
-  const existing = [...pool.values()].filter((o) => !excludeIds.has(o.id));
+  const anyTicked = candidates.some(ticked);
+  const pool = new Map(); // lowest precedence first: a later label for the same item replaces an earlier one
+  const put = (o, kind) => { if (kind) pool.set(o.id, { ...o, kind }); };
+  if (anyTicked) for (const o of db.prepare(`SELECT * FROM items WHERE status='snoozed'`).all()) put(o, 'OTHER');
+  for (const o of recentlyMoved()) put(o, erasedDrop(o) ? 'ERASED' : !isClosed(o.status) ? 'OPEN' : anyTicked && 'OTHER');
+  for (const o of openItems()) put(o, 'OPEN');
+  for (const o of pageItems) put(o, !isClosed(o.status) ? 'OPEN' : anyTicked && 'CLOSED');
+  const existing = [...pool.values()].filter((o) => !excludeIds.has(o.id)).sort((a, b) => a.code - b.code);
   if (!candidates.length || !existing.length) return new Map();
   const label = (x) => `${x.text}${x.person ? ` [${x.person}]` : ''}`;
-  const kind = (o) => (erasedDrop(o) ? 'ERASED' : isClosed(o.status) ? 'CLOSED' : 'OPEN');
   const content = `${candidates.map((c, i) => `NEW n${i}: ${label(c)}${ticked(c) ? ' (ticked)' : ''}`).join('\n')}\n\n${
-    existing.map((o) => `${kind(o)} ${o.code}: ${label(o)}`).join('\n')}`;
+    existing.map((o) => `${o.kind} ${o.code}: ${label(o)}`).join('\n')}`;
   const res = await callStructured(structuredParams({ model: config.llm.triageModel, systemBlocks: [DEDUPE_SYSTEM], content, schema: MATCH_SCHEMA }), 'dedupe');
   const byCode = new Map(existing.map((o) => [o.code, o]));
   const out = new Map();
   for (const m of res.matches || []) {
     const idx = Number(String(m.new_ref).replace(/^n/, ''));
     const o = byCode.get(m.code);
-    if (o && candidates[idx] && !out.has(idx) && (kind(o) !== 'CLOSED' || ticked(candidates[idx]))) out.set(idx, o.id);
+    if (o && candidates[idx] && !out.has(idx) && (o.kind === 'OPEN' || o.kind === 'ERASED' || ticked(candidates[idx]))) out.set(idx, o.id);
   }
   return out;
+}
+
+/**
+ * The tags a new item takes from the item its line was written from: that item's tags, and any restricted project it
+ * ever had (its tag events) or was written on (page_tags of its pages), so restricted work written again stays hidden.
+ */
+function inheritedTags(id, r) {
+  const x = db.prepare('SELECT code, tags FROM items WHERE id=?').get(id);
+  const restricted = new Set((r?.projects ?? []).filter((p) => p.sensitivity === 'restricted').map((p) => tagKey(p.tag)));
+  const history = db.prepare(`SELECT old, new FROM events WHERE item_code=? AND field='tags'`).all(x.code).flatMap((e) => [...P(e.old), ...P(e.new)]);
+  const pages = db.prepare('SELECT t.tag FROM page_tags t JOIN item_mentions m ON m.page_id=t.page_id WHERE m.item_id=?').all(id).map((t) => t.tag);
+  return [...canonicalTags(P(x.tags), r), ...canonicalTags([...history, ...pages], r).filter((t) => restricted.has(tagKey(t)))];
 }
 
 /** Live (not gone) mentions of an item: on this page, and on any other. */
@@ -193,18 +213,17 @@ export function pageEmptied(pageId) {
  *
  * Which item a line is:
  * 1. A line linked (existing_item_id) to an item whose line is on this page now is that line, read again. So is one
- *    linked to an item closed after its line left this page (a read missed the line, then it was closed by number):
- *    the line never left. And one linked to an item dropped in the last few hours because its line left: the line is
- *    back (moved back, or a read missed it), and the item opens again. But one closed before its line left (ticked,
- *    then erased), or dropped longer ago, is the task written again.
+ *    linked to an item dropped in the last few hours because its line left: the line is back (moved back, or a read
+ *    missed it), and the item opens again. One linked to any other item whose line left this page is the task
+ *    written again: a done task written again is a new commitment, even if a read had only missed its line.
  * 2. Otherwise, a ticked line with the very words of an unlinked item on this page, or of a done item this page
  *    closed, is that item (matched in code, so this week's open copy of a recurring task on another page isn't closed
  *    in its place). An open item of the page comes first: it's the one just ticked.
  * 3. Every other line goes to the dedupe (matchExisting): carried, moved, or new. A line linked to an item whose line
- *    left this page earlier is one of these: written again here. If it's new, it keeps that item's tags, so a
- *    restricted task written again stays restricted.
- * 4. A ticked line matched to an item this page closed, or an old line of an item that has moved to another page,
- *    changes nothing.
+ *    left this page earlier is one of these: written again here. If it's new, it keeps that item's tags and any
+ *    restricted project it ever had or was written on, so a restricted task written again stays restricted.
+ * 4. A ticked line matched to an item this page closed changes nothing, and so does a struck line matched to an item
+ *    whose line has moved from this page to another (its old line, read again).
  */
 export async function applyPageResult(pageRow, result, fallbackDate, r = currentRegistry()) {
   const dated = isDate(result.page_date);
@@ -216,9 +235,8 @@ export async function applyPageResult(pageRow, result, fallbackDate, r = current
   const live = new Set(prior.filter((p) => !mentions.get(p.id)).map((p) => p.id));
   const lineBack = (id) => {
     const gone = mentions.get(id);
-    const cur = gone && db.prepare('SELECT status, closed_by, closed_at FROM items WHERE id=?').get(id);
-    if (!cur || !isClosed(cur.status)) return false;
-    return erasedDrop(cur) ? gone >= movedSince() : cur.closed_at > gone;
+    const cur = gone && db.prepare('SELECT status, closed_by FROM items WHERE id=?').get(id);
+    return !!cur && erasedDrop(cur) && gone >= movedSince();
   };
   // Items this page closed or snoozed without a line of its own for them.
   const closedHere = new Map(closedOnPage(pageRow.id).filter((i) => !priorById.has(i.id)).map((i) => [i.id, i]));
@@ -254,9 +272,9 @@ export async function applyPageResult(pageRow, result, fallbackDate, r = current
     const row = (id) => db.prepare('SELECT status, closed_by FROM items WHERE id=?').get(id);
     // The ticked line of an item this page closed, read again: the page already closed it.
     const closedTick = (id) => closedHere.has(id) && isClosed(row(id)?.status) && row(id).closed_by !== 'erased';
-    // An old line of an item whose line left this page and is now on another (a moved line, read again here ticked
-    // or struck through): the item is where its line is now.
-    const movedAway = (id, it) => isClosed(it.status) && priorById.has(id) && !liveOn(id, pageRow.id) && liveElsewhere(id, pageRow.id);
+    // A struck line of an item whose line left this page and is now on another (its old line, moved, read again
+    // here): the item is where its line is now. A tick, though, is a tick: a read may only have missed the line.
+    const movedAway = (id, it) => it.status === 'dropped' && priorById.has(id) && !liveOn(id, pageRow.id) && liveElsewhere(id, pageRow.id);
     const apply = (id, it) => {
       // An item dropped because its line left its page, whose line is here now (moved): open again, unless the line is
       // ticked, which refreshItem applies.
@@ -277,9 +295,8 @@ export async function applyPageResult(pageRow, result, fallbackDate, r = current
         if (!priorById.has(existing)) carried++;
         return;
       }
-      // New. A line linked to an item of this page whose line left it keeps that item's tags.
-      const was = priorById.has(it.existing_item_id) && db.prepare('SELECT tags FROM items WHERE id=?').get(it.existing_item_id);
-      const tags = was ? [...new Set([...it.tags, ...canonicalTags(P(was.tags), r)])] : it.tags;
+      // New. A line linked to an item of this page whose line left it keeps that item's tags and restriction.
+      const tags = priorById.has(it.existing_item_id) ? [...new Set([...it.tags, ...inheritedTags(it.existing_item_id, r)])] : it.tags;
       touched.add(insertItem({ ...it, tags }, pageRow.id, pageDate)); created++;
     });
 

@@ -21,7 +21,11 @@ async function pullAndRender() {
   const src = source();
   const docs = (await src.listDocuments()).filter((d) => !d.name.startsWith('_')); // _Today sheet etc. are outputs, not inputs
   let rendered = 0;
-  const emptied = [];
+  const emptied = { items: [], dates: [] };
+  const empty = (pageId) => { // a page now blank or deleted: its lines are gone, and its day's notes change
+    emptied.items.push(...pageEmptied(pageId));
+    emptied.dates.push(db.prepare('SELECT page_date FROM pages WHERE id=?').get(pageId)?.page_date);
+  };
   for (const d of docs) {
     const known = d.id && db.prepare('SELECT version FROM documents WHERE id=?').get(d.id);
     if (known && d.version && known.version === d.version) continue; // unchanged since last pull
@@ -46,11 +50,19 @@ async function pullAndRender() {
           png_path=excluded.png_path, typed_text=excluded.typed_text, batch_id=NULL, updated_at=excluded.updated_at`)
         .run(p.id, bundle.id, p.index, hash, r.pngPath ? 'rendered' : 'blank', r.pngPath, r.typed_text, now());
       if (r.pngPath) rendered++;
-      else emptied.push(...pageEmptied(p.id)); // every line erased: there's nothing to read, so nothing reads it
+      else empty(p.id); // every line erased: there's nothing to read, so nothing reads it
     }
-    // Pages of this notebook deleted on the tablet. Only for a notebook just pulled whole, so a failed pull drops nothing.
+    // Pages of this notebook deleted on the tablet: never read again (not from an old render, nor from a batch still
+    // out), and gone from the notes. Only for a notebook pulled with its pages listed: a pull that came back with no
+    // page list where there were pages isn't taken as every page deleted.
     const present = new Set(bundle.pages.map((p) => p.id));
-    for (const { id } of db.prepare('SELECT id FROM pages WHERE doc_id=?').all(bundle.id)) if (!present.has(id)) emptied.push(...pageEmptied(id));
+    const stored = db.prepare(`SELECT id FROM pages WHERE doc_id=? AND status <> 'deleted'`).all(bundle.id);
+    if (!bundle.pages.length && stored.length) { log(`${bundle.name}: no pages listed; not taken as deleted`); continue; }
+    for (const { id } of stored) {
+      if (present.has(id)) continue;
+      db.prepare(`UPDATE pages SET status='deleted', png_path=NULL, batch_id=NULL, updated_at=? WHERE id=?`).run(now(), id);
+      empty(id);
+    }
   }
   return { pulled: { docs: docs.length, rendered }, emptied };
 }
@@ -134,7 +146,7 @@ async function collectPending(registry) {
   for (const b of pending) {
     const res = await collectBatch(b.id, 'transcribe');
     if (!res) continue;
-    const rows = db.prepare(`SELECT * FROM pages WHERE batch_id=?`).all(b.id);
+    const rows = db.prepare(`SELECT * FROM pages WHERE batch_id=? AND status='queued'`).all(b.id);
     const out = await applyAll(rows, byPageId(rows, res), registry);
     out.dates.forEach((d) => dates.add(d));
     db.prepare(`UPDATE batches SET status='ended', ended_at=? WHERE id=?`).run(now(), b.id);
@@ -157,7 +169,7 @@ export async function ingest({ mode = 'batch' } = {}) {
     log(`registry ${registry ? `${registry.version} (${registry.projects.length} projects)` : 'none'}${reg.errors ? ` — ${reg.path} rejected: ${reg.errors.join('; ')}` : ''}`);
     const dates = await collectPending(registry);
     const { pulled, emptied } = await pullAndRender();
-    mentionDates(emptied).forEach((d) => dates.add(d));
+    [...mentionDates(emptied.items), ...emptied.dates].filter(Boolean).forEach((d) => dates.add(d));
     const rows = db.prepare(`SELECT * FROM pages WHERE status IN ('rendered','error') AND png_path IS NOT NULL`).all();
     const loops = openLoopsBlock(openItems());
     let tally = { created: 0, carried: 0, closed: 0, failed: 0 };

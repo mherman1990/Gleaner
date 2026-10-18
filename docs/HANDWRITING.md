@@ -37,7 +37,8 @@ not on the sheet. The sheet is replaced every morning and its annotations are no
 Rewriting the same item on a new day is fine. Gleaner links it to the original and counts the days you've carried it.
 Moving a line to another page (lasso, or cut and paste) keeps its number too, as long as it's on the new page by the
 next sync (within a few hours). Striking a line through cancels it, so a struck line written again elsewhere is a new
-item. A task you tick or erase when it's done and write again later is a new item each time.
+item. Erasing a line drops its task; writing it back within those few hours brings the same task back. A task you tick
+or erase when it's done and write again later is a new item each time, keeping the old one's project tags.
 At 3+ days, the Today sheet calls it out.
 
 Anything you set with **Edit** in the browser (text, due date and time, assignee) wins over the page from then on:

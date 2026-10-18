@@ -18,13 +18,17 @@ Read README.md for setup and docs/HANDWRITING.md for the notation the extractor 
   - New items are deduped against open loops by Haiku; a match bumps `carry_days`.
   - A line no longer on a page is marked gone there (`item_mentions.gone_at`; the row stays for the sensitivity
     filter), and an open item (or one whose snooze is over) with no line left on any page is dropped as "erased". A
-    page that renders blank or is deleted on the tablet counts as every line gone (`pageEmptied`). Items whose line
-    left a page in the last 6 hours (`MOVED_WITHIN_HOURS`: the same sync or the next) are dedupe candidates: a line cut
-    from one page and pasted on another is the same item, moved (an erased drop reopens). Striking a line through
-    cancels it, as the notation says; it isn't a move. The rules for which item a line is are listed at
-    `applyPageResult`: a line written again on its page after its item was closed and its line erased, or long after an
-    erased drop, is a new item that keeps the old one's tags. A close by number, or a person dropping it, makes an
-    erased item's drop final. A due date or time changed on a dated page resets the nudges, as a hand edit does.
+    page that renders blank, or is deleted on the tablet (status `deleted`, never read again), counts as every line
+    gone (`pageEmptied`). Items whose line left a page in the last 6 hours (`MOVED_WITHIN_HOURS`: the same sync or the
+    next) are dedupe candidates: a line cut from one page and pasted on another is the same item, moved (an erased drop
+    reopens). Striking a line through cancels it, as the notation says; it isn't a move. The rules for which item a
+    line is are listed at `applyPageResult`, and the dedupe's labels (OPEN, ERASED, CLOSED, OTHER) at `matchExisting`.
+    A line written again on its page after its item was closed and its line left it, or long after an erased drop, is
+    a new item that keeps the old one's tags and restriction. A close by number, a struck line, or a person dropping
+    it, makes an erased item's drop final. A due date changed on the page, or a time on a dated page, resets the
+    nudges, as a hand edit does. Accepted trade-offs: a line a read missed that comes back over 6 hours later, or after
+    its item was closed meanwhile, is a new item; a moved line whose new page is read before its old one can't match a
+    closed or snoozed item's unticked line.
   - In task-list notebooks (`notebooks.taskLists`, default `["To do"]`), every written line is an item. Elsewhere
     only the notation or an explicit commitment makes one. The rule is in the cached system prompt, and the
     per-page flag is in the user turn.

@@ -26,7 +26,7 @@ function dedupe(params) {
   const words = (t) => new Set(t.toLowerCase().split(/\W+/).filter(Boolean));
   const near = (a, b) => [...words(a)].filter((w) => words(b).has(w)).length / Math.max(words(a).size, words(b).size);
   const news = [...text.matchAll(/^NEW (\S+): (.+?)( \(ticked\))?$/gm)].map((m) => ({ ref: m[1], t: m[2], ticked: !!m[3] }));
-  const olds = [...text.matchAll(/^(OPEN|CLOSED) (\d+): (.+)$/gm)].map((m) => ({ open: m[1] === 'OPEN', code: Number(m[2]), t: m[3] }));
+  const olds = [...text.matchAll(/^(OPEN|CLOSED|ERASED|OTHER) (\d+): (.+)$/gm)].map((m) => ({ open: m[1] === 'OPEN' || m[1] === 'ERASED', code: Number(m[2]), t: m[3] }));
   return { matches: news.flatMap((n) => {
     const fits = olds.filter((o) => (closest ? near(o.t, n.t) > 0.5 : o.t === n.t));
     const pick = closest ? fits.sort((a, b) => near(b.t, n.t) - near(a.t, n.t))[0] : fits.find((o) => o.open || n.ticked);
@@ -136,6 +136,18 @@ test('a ticked line is matched in code to a done item only for the same person, 
   await read(q, '2026-10-21', [], [{ code: db.prepare('SELECT code FROM items WHERE id=?').get(alex).code, action: 'done', snooze_until: null, evidence: '✓' }]);
   await read(q, '2026-10-21', [line('Send the invented invoice', { person: 'Jen Two', status: 'done' })]);
   assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM items WHERE text='Send the invented invoice'`).get().n, 3, 'a new done item for her');
+});
+
+test('a snoozed item elsewhere is offered only to a ticked line: written again unticked, it\'s a new item', async () => {
+  await read(newPage(), '2026-10-22', [line('Call the invented lab')]);
+  db.prepare(`UPDATE items SET status='snoozed', snooze_until='2999-01-01' WHERE text='Call the invented lab'`).run();
+  // A ticked line elsewhere on the page puts the snoozed item in the list; the fake Haiku, picking the closest
+  // wording, offers it for the unticked line too, and the code refuses.
+  closest = true;
+  try {
+    await read(newPage(), '2026-10-23', [line('Call the invented lab'), line('Sweep the invented loft', { status: 'done' })]);
+  } finally { closest = false; }
+  assert.deepEqual(db.prepare(`SELECT status FROM items WHERE text='Call the invented lab' ORDER BY code`).all().map((i) => i.status), ['snoozed', 'open']);
 });
 
 test('the dedupe offers done items only to a ticked line, labelled closed', async () => {

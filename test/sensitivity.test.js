@@ -262,6 +262,35 @@ test('a restricted task written again on a normal page, after its line left it, 
   assert.deepEqual(await leaks(), []);
 });
 
+test('a task written again from a restricted one stays hidden, whatever made the old one restricted', async () => {
+  // Restricted by a tag it no longer has (its tag history), and by the restricted page it was carried from.
+  const old = 48 * 3600e3;
+  const back = (id) => {
+    db.prepare('UPDATE item_mentions SET gone_at=? WHERE item_id=? AND gone_at IS NOT NULL').run(new Date(Date.now() - old).toISOString(), id);
+    db.prepare('UPDATE items SET closed_at=? WHERE id=?').run(new Date(Date.now() - old - 3600e3).toISOString(), id);
+  };
+  const n = await page('2026-10-30', ['widget-report'], 'Widget list', [{ text: 'Price the MARKER-LUNA-HIST rover', tags: ['mb'] }]);
+  const hist = idOf('Price the MARKER-LUNA-HIST rover');
+  await reread(n, '2026-10-30', ['widget-report'], 'Widget list', [{ text: 'Price the MARKER-LUNA-HIST rover', existing_item_id: hist }]); // tag dropped
+  const moon = [{ text: 'Count the MARKER-LUNA-CARRY crates' }];
+  await page('2026-10-30', ['moonbase'], lines('MARKER-LUNA crates', moon), moon);
+  await reread(n, '2026-10-30', ['widget-report'], 'Widget list', [{ text: 'Price the MARKER-LUNA-HIST rover', existing_item_id: hist },
+    { text: 'Count the MARKER-LUNA-CARRY crates' }]); // carried onto the widget page
+  const carry = idOf('Count the MARKER-LUNA-CARRY crates');
+  for (const id of [hist, carry]) setItemStatus(id, 'done', 'mayer'); // both done…
+  await reread(n, '2026-10-30', ['widget-report'], 'Widget list', []); // …and erased from the widget page
+  back(hist); back(carry);
+  await reread(n, '2026-10-30', ['widget-report'], 'Widget list again', [{ text: 'Price the MARKER-LUNA-HIST rover', existing_item_id: hist },
+    { text: 'Count the MARKER-LUNA-CARRY crates', existing_item_id: carry }]); // written again, untagged
+  const vis = visibility('normal');
+  for (const text of ['Price the MARKER-LUNA-HIST rover', 'Count the MARKER-LUNA-CARRY crates']) {
+    const copies = db.prepare('SELECT id, status FROM items WHERE text=? ORDER BY code').all(text);
+    assert.deepEqual(copies.map((c) => c.status), ['done', 'open'], text);
+    assert.equal(vis.item(copies[1]), false, `${text}: the new one is hidden`);
+  }
+  assert.deepEqual(await leaks(), []);
+});
+
 test('rows written after the judgement are hidden until the next one', () => {
   const vis = visibility('normal');
   db.prepare(`INSERT INTO pages (id, doc_id, page_index, rm_hash, status, tags) VALUES ('pg-late', 'doc1', 99, 'late', 'transcribed', '["orchard"]')`).run();

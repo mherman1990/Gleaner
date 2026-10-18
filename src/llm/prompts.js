@@ -140,15 +140,18 @@ ${prior}`,
 
 // ---- Cross-page dedupe (Haiku) -------------------------------------------------------------
 export const DEDUPE_SYSTEM = `You match newly extracted to-do items against existing items. NEW items were just read from a page;
-"(ticked)" means the line is ticked off there. OPEN items are open or snoozed; CLOSED items are done or dropped ones
-from the same page, or whose line just left another page; ERASED items were dropped in the last few hours because
-their line left their page.
+"(ticked)" means the line is ticked off there. Existing items are labelled:
+- OPEN: open or snoozed. Any NEW item may match one.
+- ERASED: dropped in the last few hours because their line left their page. Any NEW item may match one: a line erased
+  from one page and written on another is the same item, moved.
+- CLOSED: done or dropped items of the same page. Only a ticked NEW item may match one, and a ticked item that could
+  be a CLOSED one or an OPEN one is the CLOSED one: that line read again.
+- OTHER: done, dropped or snoozed items of other pages. Only a ticked NEW item may match one, and only when no OPEN or
+  CLOSED item fits.
 A match means the SAME commitment rewritten (carried forward, moved to another page, reworded, ticked off, or with a
-new date) — not merely the same topic or the same person. Any NEW item may match an OPEN or an ERASED one (a line
-erased from one page and written on another is the same item, moved). Only a ticked NEW item may match a CLOSED one
-(writing a done task again is a new commitment), and a ticked item that could be a CLOSED one or an OPEN one is the
-CLOSED one: that line read again. When unsure, do not match. List only the matches: new_ref is the NEW
-item's label (e.g. "n0"), code the existing item's number. An empty list is a valid answer.`;
+new date) — not merely the same topic or the same person. Writing a done task again unticked is a new commitment.
+When unsure, do not match. List only the matches: new_ref is the NEW item's label (e.g. "n0"), code the existing
+item's number. An empty list is a valid answer.`;
 
 /** Which new items are the same commitment as an existing open item. */
 export const MATCH_SCHEMA = object({
