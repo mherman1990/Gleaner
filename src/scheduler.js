@@ -4,9 +4,10 @@ import { ingest } from './pipeline/ingest.js';
 import { morningDigest, reminderSweep, weeklyReview } from './digest/digest.js';
 import { exclusive } from './jobs.js';
 
-const jobs = {
+export const jobs = {
   ingestNightly: () => exclusive('ingest:batch', () => ingest({ mode: 'batch' })),
   ingestMorning: () => exclusive('ingest:sync', () => ingest({ mode: 'sync' })),
+  ingestDaytime: () => exclusive('ingest:sync', () => ingest({ mode: 'sync' })),
   morningDigest: () => morningDigest({ push: true }),
   reminderSweep: () => reminderSweep(),
   weeklyReview: () => weeklyReview({ push: true }),

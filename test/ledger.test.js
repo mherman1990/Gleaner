@@ -1,12 +1,12 @@
 // Ledger semantics against canned record_page results. Dedupe runs in mock mode (exact text match).
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { tempEnv } from './helpers.js';
+import { tempEnv, pushSink } from './helpers.js';
 
 tempEnv('ledger');
 const { db, openItems, editItem, listItems, setItemStatus } = await import('../src/db.js');
 const { applyPageResult } = await import('../src/pipeline/ledger.js');
-const { normTime, fmtTime, localDate } = await import('../src/config.js');
+const { normTime, fmtTime, localDate, config } = await import('../src/config.js');
 const { reminderSweep } = await import('../src/digest/digest.js');
 
 let n = 0;
@@ -206,7 +206,7 @@ test('listItems: open, snoozed, closed, and reopening', async () => {
   assert.deepEqual(codes('open'), [1, 4]);
 });
 
-test('reminders: a timed item waits until shortly before its time; overdue and untimed ones go on the first sweep', async () => {
+test('reminders: a timed item waits until shortly before its time; overdue and untimed ones go on the first sweep', async (t) => {
   await apply(page(), result([
     item('Untimed today', { due: '2026-10-20' }),
     item('At 2:20', { due: '2026-10-20', due_time: '14:20' }),
@@ -215,9 +215,28 @@ test('reminders: a timed item waits until shortly before its time; overdue and u
     item('Tomorrow', { due: '2026-10-21' }),
   ]));
   const nudged = () => db.prepare('SELECT code FROM items WHERE nudge_count > 0 ORDER BY code').all().map((r) => r.code);
+  const sink = await pushSink();
+  t.after(() => { sink.close(); config.notify.ntfyUrl = ''; });
+  config.notify.ntfyUrl = sink.url;
   assert.equal((await reminderSweep({ at: new Date('2026-10-20T14:00:00-05:00') })).nudged, 3);
   assert.deepEqual(nudged(), [1, 2, 4]);
+  assert.match(sink.hits[0].body, /At 2:20 — at 2:20pm/);
   assert.equal((await reminderSweep({ at: new Date('2026-10-20T14:35:00-05:00') })).nudged, 1);
   assert.deepEqual(nudged(), [1, 2, 3, 4]);
   assert.equal((await reminderSweep({ at: new Date('2026-10-20T16:00:00-05:00') })).nudged, 0, 'once per item per day');
+  assert.equal(sink.hits.length, 2);
+});
+
+test('a nudge that reaches no one is not counted', async (t) => {
+  await apply(page(), result([item('Due today', { due: '2026-10-20' })]));
+  const at = new Date('2026-10-20T09:00:00-05:00');
+  const count = () => byCode(1).nudge_count;
+  config.notify.ntfyUrl = '';
+  assert.deepEqual(await reminderSweep({ at }), { nudged: 0, due: 1, sent: { teams: 'skipped', ntfy: 'skipped' } });
+  const failing = await pushSink(500);
+  t.after(() => { failing.close(); config.notify.ntfyUrl = ''; });
+  config.notify.ntfyUrl = failing.url;
+  assert.equal((await reminderSweep({ at })).nudged, 0);
+  assert.equal(failing.hits.length, 1, 'it was tried');
+  assert.deepEqual([count(), byCode(1).last_nudged], [0, null], 'still owed: the next sweep tries again');
 });

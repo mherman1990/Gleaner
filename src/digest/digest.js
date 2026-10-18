@@ -80,7 +80,8 @@ export async function morningDigest({ push = true } = {}) {
 
 /**
  * Every 30 min in working hours: nudge due-today and overdue items, at most once per item per day. An item due
- * today at a set time waits until the first sweep within reminders.leadMinutes of it.
+ * today at a set time waits until the first sweep within reminders.leadMinutes of it. A nudge only counts once
+ * a channel (Teams, ntfy) accepted it, so with none set up, or one failing, nothing is used up.
  */
 export async function reminderSweep({ at = new Date() } = {}) {
   const today = localDate(at);
@@ -92,15 +93,16 @@ export async function reminderSweep({ at = new Date() } = {}) {
     (i.due < today || !i.due_time || i.due_time <= soon) &&
     (!i.last_nudged || localDate(new Date(i.last_nudged)) < today) && i.nudge_count < config.reminders.maxNudgesPerItem);
   if (!due.length) return { nudged: 0 };
-  await notify({
+  const sent = await notify({
     title: `${due.length} due${b.overdue.length ? ` (${b.overdue.length} overdue)` : ''}`,
     body: due.map((i) => `#${i.code} ${i.text}${i.assignee ? ` (@${i.assignee})` : ''}` +
       `${i.due < today ? ` — was due ${i.due}` : i.due_time ? ` — at ${fmtTime(i.due_time)}` : ''}`).join('\n'),
     priority: due.some((i) => i.due < today) ? 'high' : 'default',
   });
+  if (!Object.values(sent).includes('ok')) return { nudged: 0, due: due.length, sent };
   const upd = db.prepare(`UPDATE items SET last_nudged=?, nudge_count=nudge_count+1 WHERE id=?`);
   due.forEach((i) => upd.run(at.toISOString(), i.id));
-  return { nudged: due.length };
+  return { nudged: due.length, sent };
 }
 
 export async function weeklyReview({ push = true } = {}) {
