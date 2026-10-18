@@ -23,6 +23,8 @@ HANDWRITING NOTATION (the writer uses these conventions; they are the main signa
 - "?" circled, or "Q:" = an open question to resolve.
 - "!" in the left margin = priority.
 - "by Fri", "@10/22", "due 10/22", "EOW" = due date. Resolve relative dates against the page date.
+- A time on an item line ("2pm", "@2:30", "Fri 3pm", "by 10am") = due time. A time with no date means the page date.
+- "@Name" on an item line (a name, not a date or time), "Name to …", or "owner: Name" = the item is assigned to Name.
 - "#tag" or a circled word = project tag.
 - Closing earlier items by their printed number (from the Today sheet):
     "✓14", "done 14", "14 ✓"   → close item 14 as done
@@ -57,7 +59,9 @@ ITEM EXTRACTION RULES
   wording for these; add a verb only when the meaning is unmistakable.
 - Write item text as a short imperative a reader understands out of context:
   "Send Tom the 45Z comment draft" — not "draft".
-- person = the counterpart's name as written, or null. due = YYYY-MM-DD or null. priority = true only with "!".
+- person = the counterpart's name as written, or null. assignee = the name the item is assigned to, or null when the
+  writer owns it (the usual case). due = YYYY-MM-DD or null. due_time = HH:MM on a 24-hour clock ("14:00") when a
+  time is written for the item, else null. priority = true only with "!".
 - If an item matches one in "ITEMS PREVIOUSLY EXTRACTED FROM THIS PAGE", set existing_item_id to that id so it is
   updated, not duplicated; otherwise null.
 - Use closes[] only for explicit number references ("✓14" etc.) or a checked box on a line matching an open item.
@@ -70,7 +74,8 @@ Respond with the JSON object for this page.`;
 
 export function openLoopsBlock(items) {
   if (!items.length) return 'OPEN ITEMS (by number): none.';
-  const lines = items.map((i) => `${i.code}. ${i.text}${i.person ? ` [${i.person}]` : ''}${i.due ? ` (due ${i.due})` : ''}`);
+  const lines = items.map((i) => `${i.code}. ${i.text}${i.person ? ` [${i.person}]` : ''}${i.assignee ? ` @${i.assignee}` : ''}` +
+    `${i.due ? ` (due ${i.due}${i.due_time ? ` ${i.due_time}` : ''})` : ''}`);
   return `OPEN ITEMS (by number) — the writer may close or snooze these by number:\n${lines.join('\n')}`;
 }
 
@@ -89,7 +94,9 @@ export const RECORD_PAGE_SCHEMA = object({
       text: { type: 'string' },
       kind: { type: 'string', enum: ['action', 'followup', 'waiting', 'decision', 'idea', 'question'] },
       person: nullable({ type: 'string' }),
+      assignee: nullable({ type: 'string' }),
       due: nullable(DATE),
+      due_time: { ...nullable({ type: 'string' }), description: 'HH:MM, 24-hour clock.' },
       priority: { type: 'boolean' },
       status: { type: 'string', enum: ['open', 'done', 'dropped'] },
       tags: strings,
@@ -137,7 +144,9 @@ export const MATCH_SCHEMA = object({
 export const DAILY_SYSTEM = `You are Matt's morning chief of staff, working ONLY from his handwritten-notes ledger.
 Be direct and brief. Your job is to keep him on task: surface what is due, what is slipping, and what he keeps
 rewriting without doing. Do not invent tasks or context. Calendar and email are handled elsewhere — do not
-speculate about meetings. Refer to items by their number. top3 holds at most three items.`;
+speculate about meetings. Refer to items by their number. top3 holds at most three items.
+An item with assigned=Name is delegated: Name does it and Matt only follows up, so it belongs in top3 only when it is
+due or overdue and needs chasing. A due time (due=2026-10-20 14:00) is a deadline at that time of day.`;
 
 /** The morning plan. top3 is capped at three in code (structured outputs don't accept maxItems). */
 export const DAILY_SCHEMA = object({

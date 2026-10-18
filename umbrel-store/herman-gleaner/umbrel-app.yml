@@ -4,7 +4,7 @@ name: Gleaner
 tagline: Handwritten reMarkable notes become an open-loop task list
 icon: https://raw.githubusercontent.com/mherman1990/spotter-umbrel-store/main/herman-gleaner/icon.svg
 category: productivity
-version: "0.1.2"
+version: "0.1.3"
 port: 3717
 description: >-
   Gleaner reads the notebooks in one folder of your reMarkable (/Daily by
@@ -53,9 +53,10 @@ backupIgnore:
   - data/raw/*
   - data/renders/*
 releaseNotes: >-
-  Task-list notebooks: in the notebook named "To do" (or any notebook you
-  list under notebooks.taskLists), every line you write becomes a to-do,
-  no checkbox needed. New retranscribe command re-reads pages after you
-  change the model or settings, keeping item numbers.
+  Due times and assignees: set an item's text, due date, time, and who it's
+  assigned to from the new Edit button, or write "2pm" and "@Jen" on the
+  tablet. Edits you make are kept when the page is read again. Done, Snooze,
+  and Drop now offer Undo, and snoozed and recently closed items are listed
+  with a Reopen button. Timed items are nudged shortly before their time.
 submitter: Matt Herman
 submission: https://github.com/mherman1990/Gleaner

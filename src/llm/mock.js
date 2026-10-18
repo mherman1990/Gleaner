@@ -23,8 +23,8 @@ export function mockFor(params, purpose) {
       legibility: 'high',
       uncertain_spans: [],
       items: [
-        { existing_item_id: ex('Send Tom the 45Z comment draft'), text: 'Send Tom the 45Z comment draft', kind: 'followup', person: 'Tom', due: null, priority: true, status: 'open', tags: ['45Z'] },
-        { existing_item_id: ex(`Review notes from ${nb?.[1]} p${nb?.[2]}`), text: `Review notes from ${nb?.[1]} p${nb?.[2]}`, kind: 'action', person: null, due: localDate(), priority: false, status: 'open', tags: [] },
+        { existing_item_id: ex('Send Tom the 45Z comment draft'), text: 'Send Tom the 45Z comment draft', kind: 'followup', person: 'Tom', assignee: null, due: null, due_time: null, priority: true, status: 'open', tags: ['45Z'] },
+        { existing_item_id: ex(`Review notes from ${nb?.[1]} p${nb?.[2]}`), text: `Review notes from ${nb?.[1]} p${nb?.[2]}`, kind: 'action', person: null, assignee: null, due: localDate(), due_time: null, priority: false, status: 'open', tags: [] },
       ],
       closes,
     };

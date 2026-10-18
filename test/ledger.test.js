@@ -4,8 +4,10 @@ import assert from 'node:assert/strict';
 import { tempEnv } from './helpers.js';
 
 tempEnv('ledger');
-const { db, openItems } = await import('../src/db.js');
+const { db, openItems, editItem, listItems, setItemStatus } = await import('../src/db.js');
 const { applyPageResult } = await import('../src/pipeline/ledger.js');
+const { normTime, fmtTime, localDate } = await import('../src/config.js');
+const { reminderSweep } = await import('../src/digest/digest.js');
 
 let n = 0;
 function page(docId = 'doc1') {
@@ -14,7 +16,7 @@ function page(docId = 'doc1') {
   db.prepare(`INSERT INTO pages (id, doc_id, page_index, rm_hash, status) VALUES (?,?,?,?, 'rendered')`).run(id, docId, n, `hash${n}`);
   return db.prepare('SELECT * FROM pages WHERE id=?').get(id);
 }
-const item = (text, extra = {}) => ({ text, kind: 'action', status: 'open', person: null, due: null, priority: false, tags: [], ...extra });
+const item = (text, extra = {}) => ({ text, kind: 'action', status: 'open', person: null, assignee: null, due: null, due_time: null, priority: false, tags: [], ...extra });
 const result = (items, extra = {}) => ({
   page_date: '2026-10-14', summary: 'notes', tags: [], transcription_md: 'md', legibility: 'high',
   uncertain_spans: [], items, closes: [], ...extra,
@@ -129,4 +131,93 @@ test('no written date falls back to the notebook date; a changed date reports th
   assert.equal(second.prevDate, '2026-10-01');
   assert.deepEqual(db.prepare('SELECT page_date FROM item_mentions').all(), [{ page_date: '2026-10-14' }]);
   assert.equal(byCode(1).carry_days, 1);
+});
+
+test('times and assignees are read from the page; a time with no date means the page date', async () => {
+  await apply(page(), result([
+    item('Call Jen about the RVO letter', { due: '2026-10-16', due_time: '14:00' }),
+    item('Book the Ames room', { due_time: '9:30am', assignee: 'Kelsey' }),
+    item('Send the deck', { due_time: 'later' }),
+  ]));
+  assert.deepEqual([byCode(1).due, byCode(1).due_time, byCode(1).assignee], ['2026-10-16', '14:00', null]);
+  assert.deepEqual([byCode(2).due, byCode(2).due_time, byCode(2).assignee], ['2026-10-14', '09:30', 'Kelsey']);
+  assert.deepEqual([byCode(3).due, byCode(3).due_time], [null, null], 'an unreadable time is dropped');
+});
+
+test('times: parsing and display', () => {
+  for (const [s, want] of [['14:05', '14:05'], ['9:30', '09:30'], ['2pm', '14:00'], ['2:30 PM', '14:30'], ['12am', '00:00'],
+    ['12pm', '12:00'], ['11 a.m.', '11:00'], ['14', null], ['25:00', null], ['13pm', null], ['', null], [null, null]]) {
+    assert.equal(normTime(s), want, String(s));
+  }
+  assert.deepEqual(['14:00', '09:30', '00:00', '12:15'].map(fmtTime), ['2pm', '9:30am', '12am', '12:15pm']);
+});
+
+test('hand edits survive a re-read of the page; fields not edited still follow the page', async () => {
+  const p = page();
+  await apply(p, result([item('USB Report', { due: '2026-10-20' })]));
+  const it = byCode(1);
+  assert.deepEqual(editItem(it.id, { text: 'USB report draft', due_time: '2pm', assignee: 'Jen' }), ['text', 'due_time', 'assignee']);
+  assert.deepEqual(editItem(it.id, { assignee: 'Jen' }), [], 'no change, nothing marked');
+
+  await apply(p, result([item('USB Report', { existing_item_id: it.id, due: '2026-10-22', person: 'Tom', assignee: 'Kelsey' })]));
+  const after = byCode(1);
+  assert.equal(after.text, 'USB report draft');
+  assert.equal(after.assignee, 'Jen');
+  assert.deepEqual([after.due, after.due_time], ['2026-10-20', '14:00'], 'the date and time are kept together');
+  assert.equal(after.person, 'Tom', 'a field never edited still updates');
+  assert.deepEqual(JSON.parse(after.edited), ['text', 'due_time', 'assignee']);
+});
+
+test('editItem: clearing, defaults, validation, and fresh nudges for a new deadline', async () => {
+  await apply(page(), result([item('Edit me')]));
+  const id = byCode(1).id;
+  editItem(id, { due_time: '15:00' });
+  assert.deepEqual([byCode(1).due, byCode(1).due_time], [localDate(), '15:00'], 'a time alone means today');
+  db.prepare(`UPDATE items SET last_nudged='2026-10-01T12:00:00Z', nudge_count=3 WHERE id=?`).run(id);
+  editItem(id, { due: '2026-10-30' });
+  assert.deepEqual([byCode(1).due, byCode(1).due_time, byCode(1).nudge_count, byCode(1).last_nudged], ['2026-10-30', '15:00', 0, null]);
+  editItem(id, { due: null });
+  assert.deepEqual([byCode(1).due, byCode(1).due_time], [null, null], 'no date, no time');
+  editItem(id, { assignee: '  Jen  ' });
+  assert.equal(byCode(1).assignee, 'Jen');
+  editItem(id, { assignee: '' });
+  assert.equal(byCode(1).assignee, null);
+  assert.throws(() => editItem(id, { due: '10/30' }), /YYYY-MM-DD/);
+  assert.throws(() => editItem(id, { due: '2026-02-31' }), /YYYY-MM-DD/);
+  assert.throws(() => editItem(id, { due_time: 'soon' }), /time like/);
+  assert.throws(() => editItem(id, { due: null, due_time: '9am' }), /needs a due date/);
+  assert.throws(() => editItem(id, { text: '  ' }), /empty/);
+  assert.equal(byCode(1).due, null, 'a rejected edit changes nothing');
+});
+
+test('listItems: open, snoozed, closed, and reopening', async () => {
+  await apply(page(), result([item('A'), item('B'), item('C'), item('D')]));
+  setItemStatus(byCode(1).id, 'done', 'api');
+  setItemStatus(byCode(2).id, 'snoozed', 'api', null, '2999-01-01');
+  setItemStatus(byCode(3).id, 'dropped', 'api');
+  const codes = (s) => listItems(s).map((i) => i.code).sort();
+  assert.deepEqual(codes('open'), [4]);
+  assert.deepEqual(codes('snoozed'), [2]);
+  assert.deepEqual(codes('closed'), [1, 3]);
+  assert.deepEqual(codes('all'), [1, 2, 3, 4]);
+  assert.throws(() => listItems('bogus'), /status must be/);
+  setItemStatus(byCode(1).id, 'open', 'api');
+  assert.deepEqual([byCode(1).status, byCode(1).closed_at, byCode(1).closed_by], ['open', null, null]);
+  assert.deepEqual(codes('open'), [1, 4]);
+});
+
+test('reminders: a timed item waits until shortly before its time; overdue and untimed ones go on the first sweep', async () => {
+  await apply(page(), result([
+    item('Untimed today', { due: '2026-10-20' }),
+    item('At 2:20', { due: '2026-10-20', due_time: '14:20' }),
+    item('At 3pm', { due: '2026-10-20', due_time: '15:00' }),
+    item('Yesterday late', { due: '2026-10-19', due_time: '23:00' }),
+    item('Tomorrow', { due: '2026-10-21' }),
+  ]));
+  const nudged = () => db.prepare('SELECT code FROM items WHERE nudge_count > 0 ORDER BY code').all().map((r) => r.code);
+  assert.equal((await reminderSweep({ at: new Date('2026-10-20T14:00:00-05:00') })).nudged, 3);
+  assert.deepEqual(nudged(), [1, 2, 4]);
+  assert.equal((await reminderSweep({ at: new Date('2026-10-20T14:35:00-05:00') })).nudged, 1);
+  assert.deepEqual(nudged(), [1, 2, 3, 4]);
+  assert.equal((await reminderSweep({ at: new Date('2026-10-20T16:00:00-05:00') })).nudged, 0, 'once per item per day');
 });

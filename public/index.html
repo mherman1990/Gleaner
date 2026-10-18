@@ -8,16 +8,27 @@
 :root{--bg:#faf8f3;--fg:#1d1c1a;--mut:#6b675f;--line:#e4dfd3;--card:#fff;--acc:#3d6b35;--warn:#a2461f;color-scheme:light}
 @media (prefers-color-scheme:dark){:root{--bg:#161614;--fg:#ece8df;--mut:#9a958a;--line:#2e2c28;--card:#1f1e1b;--acc:#8fbf7f;--warn:#e08a63;color-scheme:dark}}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
-main{max-width:860px;margin:0 auto;padding:20px 16px 60px}
+main{max-width:860px;margin:0 auto;padding:20px 16px 80px}
 header{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap}
 h1{font-size:22px;margin:0}h2{font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:var(--mut);margin:28px 0 8px}
-button{font:inherit;border:1px solid var(--line);background:var(--card);color:var(--fg);border-radius:6px;padding:4px 10px;cursor:pointer}
+button,input{font:inherit;color:var(--fg)}
+button{border:1px solid var(--line);background:var(--card);border-radius:6px;padding:4px 10px;cursor:pointer;min-height:32px}
 button:hover{border-color:var(--acc)}button.primary{background:var(--acc);color:var(--bg);border-color:var(--acc)}
-.item{display:grid;grid-template-columns:44px 1fr auto;gap:10px;align-items:start;padding:10px 0;border-bottom:1px solid var(--line)}
+input{border:1px solid var(--line);background:var(--card);border-radius:6px;padding:5px 8px;min-height:34px;width:100%}
+.item{display:grid;grid-template-columns:44px 1fr auto;gap:4px 10px;align-items:start;padding:10px 0;border-bottom:1px solid var(--line)}
 .code{font-weight:700;font-size:18px;text-align:right}.meta{color:var(--mut);font-size:13px}.due-past{color:var(--warn);font-weight:600}
 .acts{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.edit{grid-column:2 / -1;display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px 10px;padding:10px 0 4px}
+.edit label{display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--mut)}
+.edit .wide{grid-column:1 / -1}.edit .row{grid-column:1 / -1;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.err{color:var(--warn);font-size:13px}
+details{margin-top:4px}summary{cursor:pointer;color:var(--mut);font-size:13px;letter-spacing:.08em;text-transform:uppercase;padding:8px 0}
 pre{white-space:pre-wrap;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:14px;font:13px/1.5 ui-monospace,Menlo,monospace;overflow-x:auto}
 .status{color:var(--mut);font-size:13px}
+#toast{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);background:var(--fg);color:var(--bg);border-radius:8px;padding:8px 10px 8px 14px;
+  display:flex;gap:12px;align-items:center;box-shadow:0 4px 16px rgba(0,0,0,.25);max-width:calc(100% - 32px)}
+#toast[hidden]{display:none}#toast button{background:transparent;color:var(--bg);border-color:var(--bg)}
+@media (max-width:560px){.item{grid-template-columns:36px 1fr}.acts{grid-column:2;justify-content:flex-start}}
 </style>
 </head>
 <body>
@@ -29,42 +40,136 @@ pre{white-space:pre-wrap;background:var(--card);border:1px solid var(--line);bor
 <p class="status" id="status">Loading…</p>
 <h2>Open loops</h2>
 <div id="items"></div>
+<details id="snoozedBox"><summary>Snoozed <span id="snoozedN"></span></summary><div id="snoozed"></div></details>
+<details id="closedBox"><summary>Recently closed <span id="closedN"></span></summary><div id="closed"></div></details>
 <h2>Today</h2>
 <pre id="today">—</pre>
 </main>
+<datalist id="people"></datalist>
+<div id="toast" role="status" aria-live="polite" hidden><span id="toastMsg"></span><button id="undo">Undo</button></div>
 <script>
 const API = 'ui/api';
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const today = new Date().toLocaleDateString('en-CA');
+const nowTime = () => new Date().toTimeString().slice(0, 5);
 const nextFriday = () => { const d = new Date(); d.setDate(d.getDate() + ((5 - d.getDay() + 7) % 7 || 7)); return d.toLocaleDateString('en-CA'); };
+const shortDate = (s) => new Date(`${s}T12:00:00`).toLocaleDateString('en-US', { weekday: 'short', month: 'numeric', day: 'numeric' });
+const fmtTime = (t) => { if (!t) return ''; const [h, m] = t.split(':').map(Number); return `${h % 12 || 12}${m ? ':' + String(m).padStart(2, '0') : ''}${h < 12 ? 'am' : 'pm'}`; };
+const FRI = nextFriday();
+let byCode = new Map(), undo = null, toastTimer;
+
+const post = (code, body) => fetch(`${API}/items/${code}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+  .then(async (r) => (r.ok ? r.json() : Promise.reject(new Error((await r.json().catch(() => ({}))).error || `HTTP ${r.status}`))));
+
+function meta(i) {
+  const late = i.due && (i.due < today || (i.due === today && i.due_time && i.due_time < nowTime()));
+  const due = i.due ? `<span class="${late ? 'due-past' : ''}">due ${shortDate(i.due)}${i.due_time ? ' ' + fmtTime(i.due_time) : ''}</span>` : '';
+  return [i.kind, esc(i.person), i.assignee ? `assigned to ${esc(i.assignee)}` : '', due,
+    i.status === 'snoozed' && i.snooze_until > today ? `snoozed until ${shortDate(i.snooze_until)}` : '',
+    i.status === 'done' || i.status === 'dropped' ? `${i.status} ${i.closed_at ? new Date(i.closed_at).toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' }) : ''} via ${esc(i.closed_by)}` : '',
+    i.carry_days > 1 ? `carried ${i.carry_days}d` : '', (i.tags || []).map((t) => '#' + esc(t)).join(' ')].filter(Boolean).join(' · ');
+}
+
+function row(i) {
+  const acts = i.status === 'open' || (i.status === 'snoozed' && i.snooze_until <= today)
+    ? `<button data-c="${i.code}" data-s="done">Done</button>
+       <button data-c="${i.code}" data-s="snoozed" title="Hide until ${FRI}">Snooze to ${shortDate(FRI)}</button>
+       <button data-c="${i.code}" data-s="dropped">Drop</button>
+       <button data-edit="${i.code}">Edit</button>`
+    : `<button data-c="${i.code}" data-s="open">Reopen</button>`;
+  return `<div class="item" id="item-${i.code}">
+    <div class="code">${i.code}</div>
+    <div><div>${esc(i.text)}${i.priority ? ' <b>!</b>' : ''}</div><div class="meta">${meta(i)}</div></div>
+    <div class="acts">${acts}</div>
+  </div>`;
+}
+
+function editForm(i) {
+  return `<form class="edit" data-code="${i.code}">
+    <label class="wide">Item<input name="text" value="${esc(i.text)}" required></label>
+    <label>Due date<input type="date" name="due" value="${esc(i.due)}"></label>
+    <label>Time<input type="time" name="due_time" value="${esc(i.due_time)}"></label>
+    <label>Assigned to<input name="assignee" list="people" value="${esc(i.assignee)}" placeholder="you" autocomplete="off"></label>
+    <div class="row"><button class="primary">Save</button><button type="button" data-cancel>Cancel</button><span class="err" role="alert"></span></div>
+  </form>`;
+}
 
 async function load() {
-  const [items, status] = await Promise.all([fetch(`${API}/items`).then(r => r.json()), fetch(`${API}/status`).then(r => r.json())]);
-  $('items').innerHTML = items.length ? items.map((i) => `
-    <div class="item">
-      <div class="code">${i.code}</div>
-      <div><div>${esc(i.text)}${i.priority ? ' <b>!</b>' : ''}</div>
-        <div class="meta">${[i.kind, i.person, i.due ? `<span class="${i.due < today ? 'due-past' : ''}">due ${i.due}</span>` : '', i.carry_days > 1 ? `carried ${i.carry_days}d` : '', (i.tags || []).map(t => '#' + esc(t)).join(' ')].filter(Boolean).join(' · ')}</div></div>
-      <div class="acts">
-        <button data-c="${i.code}" data-s="done">Done</button>
-        <button data-c="${i.code}" data-s="snoozed">Fri</button>
-        <button data-c="${i.code}" data-s="dropped">Drop</button>
-      </div>
-    </div>`).join('') : '<p class="meta">Nothing open.</p>';
+  const get = (q) => fetch(`${API}/items${q}`).then((r) => r.json());
+  const [open, snoozed, closed, status] = await Promise.all([get(''), get('?status=snoozed'), get('?status=closed'), fetch(`${API}/status`).then((r) => r.json())]);
+  byCode = new Map([...open, ...snoozed, ...closed].map((i) => [i.code, i]));
+  $('items').innerHTML = open.length ? open.map(row).join('') : '<p class="meta">Nothing open.</p>';
+  $('snoozed').innerHTML = snoozed.map(row).join('') || '<p class="meta">Nothing snoozed.</p>';
+  $('closed').innerHTML = closed.slice(0, 30).map(row).join('') || '<p class="meta">Nothing closed yet.</p>';
+  $('snoozedN').textContent = `(${snoozed.length})`;
+  $('closedN').textContent = `(${closed.length})`;
+  const names = [...new Set([...byCode.values()].flatMap((i) => [i.assignee, i.person]).filter(Boolean))].sort();
+  $('people').innerHTML = names.map((n) => `<option value="${esc(n)}">`).join('');
   const last = status.runs?.[0];
-  $('status').textContent = `${items.length} open · last run: ${last ? `${last.kind} ${last.ok ? 'ok' : 'FAILED'} ${new Date(last.started_at).toLocaleString()}` : 'none'}${status.busy ? ` · running ${status.busy}` : ''}`;
+  $('status').textContent = `${open.length} open · last run: ${last ? `${last.kind} ${last.ok ? 'ok' : 'FAILED'} ${new Date(last.started_at).toLocaleString()}` : 'none'}${status.busy ? ` · running ${status.busy}` : ''}`;
   const d = await fetch(`${API}/digest/today`);
   $('today').textContent = d.ok ? await d.text() : 'No digest yet today.';
 }
 
+function toast(msg, undoFn) {
+  $('toastMsg').textContent = msg;
+  undo = undoFn;
+  $('undo').hidden = !undoFn;
+  $('toast').hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { $('toast').hidden = true; undo = null; }, 10000);
+}
+
+const DID = { done: 'marked done', dropped: 'dropped', snoozed: `snoozed to ${shortDate(FRI)}`, open: 'reopened' };
+
 document.addEventListener('click', async (e) => {
-  const b = e.target.closest('button[data-c]');
-  if (!b) return;
-  const body = { status: b.dataset.s, ...(b.dataset.s === 'snoozed' ? { until: nextFriday() } : {}) };
-  await fetch(`${API}/items/${b.dataset.c}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-  load();
+  const s = e.target.closest('button[data-s]');
+  if (s) {
+    const code = Number(s.dataset.c), before = byCode.get(code);
+    const body = { status: s.dataset.s, ...(s.dataset.s === 'snoozed' ? { until: FRI } : {}) };
+    try {
+      await post(code, body);
+      const back = before.status === 'snoozed' && before.snooze_until > today ? { status: 'snoozed', until: before.snooze_until }
+        : { status: before.status === 'snoozed' ? 'open' : before.status };
+      toast(`#${code} ${DID[s.dataset.s]}`, back.status === body.status ? null : () => post(code, back));
+    } catch (err) { toast(`#${code}: ${err.message}`); }
+    return load();
+  }
+  const ed = e.target.closest('button[data-edit]');
+  if (ed) {
+    const el = $(`item-${ed.dataset.edit}`);
+    const open = el.querySelector('form.edit');
+    if (open) return open.remove();
+    el.insertAdjacentHTML('beforeend', editForm(byCode.get(Number(ed.dataset.edit))));
+    return el.querySelector('input[name=due]').focus();
+  }
+  if (e.target.closest('[data-cancel]')) return e.target.closest('form').remove();
 });
+
+document.addEventListener('submit', async (e) => {
+  const f = e.target.closest('form.edit');
+  if (!f) return;
+  e.preventDefault();
+  const code = Number(f.dataset.code), cur = byCode.get(code);
+  // Send only what changed: every field sent is marked as set by hand, and re-reading the page won't overwrite it.
+  const changes = {};
+  for (const k of ['text', 'due', 'due_time', 'assignee']) {
+    const v = f.elements[k].value.trim();
+    if (v !== (cur[k] ?? '')) changes[k] = v || null;
+  }
+  if (!Object.keys(changes).length) return f.remove();
+  // Clearing the date also clears the time, so undo puts both back.
+  const undoKeys = new Set(Object.keys(changes));
+  if (undoKeys.has('due') || undoKeys.has('due_time')) { undoKeys.add('due'); undoKeys.add('due_time'); }
+  try {
+    await post(code, changes);
+    toast(`#${code} saved`, () => post(code, Object.fromEntries([...undoKeys].map((k) => [k, cur[k] ?? null]))));
+    load();
+  } catch (err) { f.querySelector('.err').textContent = err.message; }
+});
+
+$('undo').onclick = async () => { const fn = undo; $('toast').hidden = true; undo = null; if (fn) { await fn().catch((err) => toast(err.message)); load(); } };
 $('ingest').onclick = async () => { await fetch(`${API}/ingest`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"mode":"sync"}' }); setTimeout(load, 1500); };
 $('digest').onclick = async () => { $('today').textContent = 'Building…'; await fetch(`${API}/digest`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); load(); };
 load();

@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import PDFDocument from 'pdfkit';
-import { paths, config, localWeekday } from '../config.js';
+import { paths, config, localWeekday, fmtTime } from '../config.js';
 
 const FONT_DIR = '/usr/share/fonts/truetype/dejavu';
 const hasDejaVu = fs.existsSync(path.join(FONT_DIR, 'DejaVuSans.ttf'));
@@ -34,7 +34,8 @@ export async function buildTodaySheet({ today, plan, top, b }) {
       if (doc.y > 540) { doc.font(R).fontSize(8.5).text('… more in open loops'); break; }
       const y = doc.y + 3;
       doc.font(B).fontSize(13).text(String(i.code), 30, y, { width: 34, align: 'right' });
-      const meta = [i.person, i.due ? `due ${i.due}` : null, i.carry_days > 1 ? `${i.carry_days}d` : null].filter(Boolean).join(' · ');
+      const meta = [i.person, i.assignee ? `@${i.assignee}` : null, i.due ? `due ${i.due}${i.due_time ? ` ${fmtTime(i.due_time)}` : ''}` : null,
+        i.carry_days > 1 ? `${i.carry_days}d` : null].filter(Boolean).join(' · ');
       doc.font(R).fontSize(10.5).text(`${BOX} ${i.text}`, 72, y + 1, { width: w - 42 });
       if (meta || i.why) doc.font(R).fontSize(8).fillColor('#555').text([meta, i.why].filter(Boolean).join(' — '), 84, doc.y, { width: w - 54 }).fillColor('black');
       doc.x = 30;

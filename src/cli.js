@@ -5,19 +5,26 @@
 //   digest [--push]   build the morning digest (and push Today sheet / notifications with --push)
 //   remind            run the reminder sweep once
 //   weekly [--push]   build the weekly review
-//   items             print open loops
+//   items [snoozed|closed|all]   print open loops (or the others, with their numbers)
 //   retranscribe all | YYYY-MM-DD | "<notebook>"   read those pages again now (after a prompt/model change)
-//   done <code> | drop <code> | snooze <code> <YYYY-MM-DD>
+//   done <code> | drop <code> | snooze <code> <YYYY-MM-DD> | reopen <code>
+//   due <code> <YYYY-MM-DD> [time] | due <code> none     set or clear the due date and time (14:00, 2pm)
+//   assign <code> <name> | assign <code> none
 import { execFileSync } from 'node:child_process';
 import { config } from './config.js';
-import { db, setItemStatus } from './db.js';
+import { db, setItemStatus, editItem, listItems } from './db.js';
 import { source } from './adapters/index.js';
 import { ingest, markForRetranscription } from './pipeline/ingest.js';
 import { morningDigest, reminderSweep, weeklyReview } from './digest/digest.js';
-import { renderOpenLoops, refreshItemOutputs } from './output/markdown.js';
+import { renderOpenLoops, refreshItemOutputs, itemLine } from './output/markdown.js';
 
 const [cmd, ...args] = process.argv.slice(2);
 const flag = (f) => args.includes(f);
+function itemByCode(code) {
+  const item = db.prepare('SELECT id FROM items WHERE code=?').get(Number(code));
+  if (!item) throw new Error(`no item #${code}`);
+  return item;
+}
 
 async function main() {
   switch (cmd) {
@@ -33,7 +40,12 @@ async function main() {
     case 'digest': console.log((await morningDigest({ push: flag('--push') })).md); break;
     case 'remind': console.log(await reminderSweep()); break;
     case 'weekly': console.log((await weeklyReview({ push: flag('--push') })).md); break;
-    case 'items': console.log(renderOpenLoops()); break;
+    case 'items': {
+      if (!args[0] || args[0] === 'open') { console.log(renderOpenLoops()); break; }
+      const rows = listItems(args[0]);
+      console.log(rows.map((i) => `${itemLine(i)}${i.status === 'snoozed' ? ` until ${i.snooze_until}` : ''}`).join('\n') || 'none');
+      break;
+    }
     case 'retranscribe': {
       if (!args[0]) throw new Error('usage: retranscribe all | YYYY-MM-DD | "<notebook name>"');
       const n = markForRetranscription(args[0]);
@@ -41,17 +53,27 @@ async function main() {
       if (n) console.log(await ingest({ mode: 'sync' }));
       break;
     }
-    case 'done': case 'drop': case 'snooze': {
-      const item = db.prepare('SELECT id FROM items WHERE code=?').get(Number(args[0]));
-      if (!item) throw new Error(`no item #${args[0]}`);
+    case 'done': case 'drop': case 'snooze': case 'reopen': {
+      const item = itemByCode(args[0]);
       if (cmd === 'snooze' && !/^\d{4}-\d{2}-\d{2}$/.test(args[1] || '')) throw new Error('usage: snooze N YYYY-MM-DD');
-      setItemStatus(item.id, cmd === 'done' ? 'done' : cmd === 'drop' ? 'dropped' : 'snoozed', 'cli', null, cmd === 'snooze' ? args[1] : null);
+      setItemStatus(item.id, { done: 'done', drop: 'dropped', snooze: 'snoozed', reopen: 'open' }[cmd], 'cli', null, cmd === 'snooze' ? args[1] : null);
       refreshItemOutputs([item.id]);
       console.log(`#${args[0]} → ${cmd}`);
       break;
     }
+    case 'due': case 'assign': {
+      const item = itemByCode(args[0]);
+      const rest = args.slice(1);
+      if (!rest.length) throw new Error(cmd === 'due' ? 'usage: due N YYYY-MM-DD [time] | due N none' : 'usage: assign N <name> | assign N none');
+      const none = rest[0] === 'none';
+      editItem(item.id, cmd === 'assign' ? { assignee: none ? null : rest.join(' ') }
+        : none ? { due: null } : { due: rest[0], due_time: rest.slice(1).join(' ') || null });
+      refreshItemOutputs([item.id]);
+      console.log(itemLine(db.prepare('SELECT * FROM items WHERE id=?').get(item.id)));
+      break;
+    }
     default:
-      console.log('usage: gleaner doctor | ingest [--sync] | digest [--push] | remind | weekly [--push] | items | retranscribe all|YYYY-MM-DD|"<notebook>" | done N | drop N | snooze N YYYY-MM-DD');
+      console.log('usage: gleaner doctor | ingest [--sync] | digest [--push] | remind | weekly [--push] | items [snoozed|closed|all] | retranscribe all|YYYY-MM-DD|"<notebook>" | done N | drop N | snooze N YYYY-MM-DD | reopen N | due N YYYY-MM-DD [time] | due N none | assign N <name> | assign N none');
   }
 }
 main().then(() => process.exit(0)).catch((e) => { console.error(e.message); process.exit(1); });

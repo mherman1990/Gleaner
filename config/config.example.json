@@ -25,7 +25,8 @@
   "reminders": {
     "staleDays": 7,
     "carryFlagAt": 3,
-    "maxNudgesPerItem": 3
+    "maxNudgesPerItem": 3,
+    "leadMinutes": 30
   },
   "notify": {
     "tabletTodaySheet": true,
