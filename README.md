@@ -67,12 +67,42 @@ or `taskLists`, run `node src/cli.js retranscribe` with `all`, a date (`2026-10-
 (`"To do"`). Items keep their numbers. Each page re-read is a new Claude call, so `all` costs what the first
 pass did.
 
+## Project registry
+
+`/data/projects.yaml` on the Pi lists your projects. Each has:
+- a canonical tag and its aliases;
+- a program, status, sensitivity (`normal` or `restricted`), funding, and search hints for Cowork.
+
+The file also lists the short forms you write for people, and context tags. See `config/projects.example.yaml`
+for the format. The real file never goes in this repo, which is public; any file named `projects.yaml` is git-ignored.
+
+- **Transcription:** the registry is part of the cached system prompt. An alias, a case variant, or a stray `#`
+  (`#kites`, `KS`, `kite-study`) is stored as the one canonical tag. Values are read as written: an alias `12.40`
+  stays `12.40`. A name in `write_as` becomes the full name, and a first name shared by two people stays
+  as written with `person_ambiguous`. A re-read that gives only the first name of the person already stored
+  (`Alex` after `Alex Two`) keeps the full name.
+- **Unknown tags:** a tag the registry doesn't cover is kept as written. The API shows it under
+  `unregistered_tags`, and the Sunday review lists it with a count, so you can add it.
+- **Editing:** Gleaner notices a changed file by itself. First check the file, either in the app
+  (`node src/cli.js registry check /data/projects.yaml`) or on any computer with Node 22 and this repo, after `npm ci`
+  (`node scripts/check-registry.mjs ~/gleaner/projects.yaml`, with the file kept outside the repo; a copy named
+  `projects.yaml` inside it is git-ignored anyway). A file that fails the check is ignored, and the last good
+  version stays in use, including after a restart and in CLI commands: every valid version is saved next to the
+  file as `.projects.yaml.last-good`. `doctor` shows which is in use and why. A key the format doesn't use (a
+  typo such as `alias:`) is reported as a warning.
+- **Run log:** every read logs the registry version (a hash of the file).
+- **Without a registry:** the flat `tags` list in `config.json` seeds the transcriber instead.
+
 ## API (Bearer token)
 
 `GET /api/items[?status=open|snoozed|closed|all&tag=45Z]` ·
-`POST /api/items/:code {status: done|dropped|open|snoozed, until, text, due, due_time, assignee}` (any of them; `null` clears) ·
+`POST /api/items/:code {status: done|dropped|open|snoozed, until, text, due, due_time, person, assignee}` (any of them; `null` clears) ·
 `GET /api/open-loops.md` · `GET /api/digest/today` · `GET /api/notes[?from&to]` · `GET /api/notes/:date` ·
 `GET /api/search?q=` · `POST /api/ingest {mode: sync|batch}` · `POST /api/digest {push}` · `GET /api/status`
+
+Items carry `tags`, `unregistered_tags` (tags the registry doesn't cover) and `person_ambiguous` (the person or
+assignee is a first name two registry people share). Both are worked out against the registry in use when the item
+is returned, so they follow its edits. `?tag=` takes a canonical tag or any alias, in any case.
 
 ## Releases
 

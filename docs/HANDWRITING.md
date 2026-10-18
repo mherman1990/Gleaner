@@ -15,9 +15,13 @@ or an explicit commitment ("I'll send…"). Ordinary notes stay notes, so the ta
 | `by Fri` · `@10/22` · `EOW` | Due date (relative to the page date) |
 | `2pm` · `@2:30` · `Fri 3pm` on an item line | Due time. A time with no date means the page's date. |
 | `@Jen thing` · `Jen to …` · `owner: Jen` | Assigned to Jen (shown as waiting on others) |
-| `#45Z` or a circled word | Project tag |
+| `#kite-study` or a circled word | Project tag. Any alias listed in `projects.yaml` (say `#kites` for `kite-study`) is stored as the canonical tag |
 | checked box `☑` | That item is done |
 | strike through a line | Cancelled; no item is created |
+
+Short names work too: if `projects.yaml` lists `Pat` under a person's `write_as`, `→ Pat: …` is stored with the
+full name. A first name two people share stays as written and is flagged, so write a short form that tells them apart
+(`Alex O`, `Alex T`) when it matters.
 
 ## Closing items from the Today sheet
 

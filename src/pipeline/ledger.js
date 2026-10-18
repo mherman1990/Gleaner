@@ -5,6 +5,7 @@
 //     which bumps carry_days instead of creating a duplicate. carry_days is the "you keep carrying this" signal.
 import { db, newId, nextCode, J, P, setItemStatus, openItems } from '../db.js';
 import { config, normTime } from '../config.js';
+import { currentRegistry, canonicalTags, resolvePerson, isFirstNameOf } from '../registry.js';
 import { callStructured, structuredParams } from '../llm/client.js';
 import { DEDUPE_SYSTEM, MATCH_SCHEMA } from '../llm/prompts.js';
 
@@ -31,12 +32,21 @@ function dueOf(it, pageDate) {
   return { due, due_time: due ? time : null };
 }
 
+/**
+ * The model's item, mapped onto the registry: aliases become canonical tags and a known name becomes the full name.
+ * The model is asked to do the same, but this is what's stored. A first name shared by two registry people stays
+ * as written; person_ambiguous is worked out from the stored names whenever an item is returned (personAmbiguous).
+ */
+function normalize(it, r = currentRegistry()) {
+  return { ...it, tags: canonicalTags(it.tags, r), person: resolvePerson(it.person, r).name, assignee: resolvePerson(it.assignee, r).name };
+}
+
 function insertItem(it, pageId, pageDate) {
   const id = newId('it');
   const { due, due_time } = dueOf(it, pageDate);
-  db.prepare(`INSERT INTO items (id, code, text, kind, person, assignee, due, due_time, priority, tags, status, first_page_id, last_page_id, first_seen, last_seen)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
-    id, nextCode(), it.text.trim(), VALID.has(it.kind) ? it.kind : 'action', it.person || null, it.assignee?.trim() || null,
+  db.prepare(`INSERT INTO items (id, code, text, kind, person, assignee, due, due_time, priority, tags, status,
+    first_page_id, last_page_id, first_seen, last_seen) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    id, nextCode(), it.text.trim(), VALID.has(it.kind) ? it.kind : 'action', it.person || null, it.assignee || null,
     due, due_time, it.priority ? 1 : 0, J(it.tags), 'open', pageId, pageId, pageDate, pageDate);
   if (it.status === 'done' || it.status === 'dropped') setItemStatus(id, it.status, 'handwriting', 'marked on source page');
   mention(id, pageId, pageDate);
@@ -44,17 +54,24 @@ function insertItem(it, pageId, pageDate) {
 }
 
 /** Re-read or carried item. A value the model didn't find keeps the old one, and a field edited by hand is kept. */
-function refreshItem(id, it, pageDate) {
+function refreshItem(id, it, pageDate, r) {
   const cur = db.prepare('SELECT * FROM items WHERE id=?').get(id);
   const hand = new Set(P(cur.edited));
   const read = dueOf(it, pageDate);
   const keepDue = hand.has('due') || hand.has('due_time') || !read.due;
-  db.prepare(`UPDATE items SET text=@text, person=@person, assignee=@assignee, due=@due, due_time=@due_time,
-    priority=@priority, tags=@tags WHERE id=@id`).run({
+  // A name stays when this read has none or it was set by hand. When this read is only the stored registry person's
+  // first name ("Alex" after "Alex Two", or after "Alex T" stored before the registry), that person stays, in full.
+  // Another person's name replaces it.
+  const name = (field) => {
+    if (hand.has(field) || !it[field]) return cur[field];
+    return isFirstNameOf(it[field], cur[field], r) ? resolvePerson(cur[field], r).name : it[field];
+  };
+  db.prepare(`UPDATE items SET text=@text, person=@person, assignee=@assignee,
+    due=@due, due_time=@due_time, priority=@priority, tags=@tags WHERE id=@id`).run({
     id,
     text: hand.has('text') ? cur.text : it.text.trim(),
-    person: it.person || cur.person,
-    assignee: hand.has('assignee') ? cur.assignee : it.assignee?.trim() || cur.assignee,
+    person: name('person'),
+    assignee: name('assignee'),
     due: keepDue ? cur.due : read.due,
     due_time: keepDue ? cur.due_time : read.due_time,
     priority: Math.max(cur.priority, it.priority ? 1 : 0),
@@ -80,24 +97,26 @@ async function matchAgainstOpen(candidates, excludeIds) {
 /**
  * Apply one page's transcription (shaped by RECORD_PAGE_SCHEMA). Returns a short summary for logging, plus what
  * changed so the caller can regenerate the right markdown: prevDate (the page's old date, if it moved) and
- * itemIds (every item touched).
+ * itemIds (every item touched). r is the registry to map tags and names with: the ingest run's, so a page is
+ * applied with the registry its prompt had; the current one by default.
  */
-export async function applyPageResult(pageRow, result, fallbackDate) {
+export async function applyPageResult(pageRow, result, fallbackDate, r = currentRegistry()) {
   const pageDate = isDate(result.page_date) ? result.page_date : fallbackDate;
   const prevDate = db.prepare('SELECT page_date FROM pages WHERE id=?').get(pageRow.id)?.page_date || null;
   db.prepare(`UPDATE pages SET status='transcribed', transcribed_hash=rm_hash, page_date=?, summary=?, tags=?, transcription_md=?,
     legibility=?, uncertain=?, batch_id=NULL, error=NULL, updated_at=datetime('now') WHERE id=?`)
-    .run(pageDate, result.summary || '', J(result.tags), result.transcription_md || '', result.legibility || null, J(result.uncertain_spans), pageRow.id);
+    .run(pageDate, result.summary || '', J(canonicalTags(result.tags, r)), result.transcription_md || '', result.legibility || null, J(result.uncertain_spans), pageRow.id);
 
   const prior = priorItemsForPage(pageRow.id);
   const priorIds = new Set(prior.map((p) => p.id));
   const touched = new Set();
   const fresh = [];
 
-  for (const it of result.items || []) {
-    if (!it?.text?.trim()) continue;
+  for (const raw of result.items || []) {
+    if (!raw?.text?.trim()) continue;
+    const it = normalize(raw, r);
     if (it.existing_item_id && priorIds.has(it.existing_item_id)) {
-      refreshItem(it.existing_item_id, it, pageDate);
+      refreshItem(it.existing_item_id, it, pageDate, r);
       mention(it.existing_item_id, pageRow.id, pageDate);
       touched.add(it.existing_item_id);
     } else fresh.push(it);
@@ -111,7 +130,7 @@ export async function applyPageResult(pageRow, result, fallbackDate) {
   fresh.forEach((it, idx) => {
     const existing = matches.get(idx);
     if (existing) {
-      refreshItem(existing, it, pageDate); mention(existing, pageRow.id, pageDate); touched.add(existing);
+      refreshItem(existing, it, pageDate, r); mention(existing, pageRow.id, pageDate); touched.add(existing);
       if (!priorIds.has(existing)) carried++;
     } else { touched.add(insertItem(it, pageRow.id, pageDate)); created++; }
   });

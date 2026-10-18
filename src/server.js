@@ -13,9 +13,12 @@ import { renderOpenLoops, dayFilePath, refreshItemOutputs } from './output/markd
 import { ingest } from './pipeline/ingest.js';
 import { morningDigest, addDays } from './digest/digest.js';
 import { busy, exclusive } from './jobs.js';
+import { canonicalTag, canonicalTags, unregisteredTags, personAmbiguous, tagKey } from './registry.js';
 
 const PUBLIC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../public');
-const itemJson = (i) => ({ ...i, tags: P(i.tags), edited: P(i.edited) });
+// unregistered_tags and person_ambiguous are worked out against the current registry, so they follow its edits.
+const itemJson = (i) => ({ ...i, tags: P(i.tags), edited: P(i.edited), person_ambiguous: personAmbiguous(i),
+  unregistered_tags: unregisteredTags(P(i.tags)) });
 
 function router() {
   const r = express.Router();
@@ -25,7 +28,10 @@ function router() {
   r.get('/items', (req, res) => {
     let rows;
     try { rows = listItems(req.query.status || 'open'); } catch (e) { return res.status(400).json({ error: e.message }); }
-    if (req.query.tag) rows = rows.filter((i) => P(i.tags).includes(req.query.tag));
+    if (req.query.tag) { // an alias or case variant finds the same items, older ones and unregistered tags included
+      const want = tagKey(canonicalTag(req.query.tag)?.tag);
+      rows = rows.filter((i) => canonicalTags(P(i.tags)).some((t) => tagKey(t) === want));
+    }
     res.json(rows.map(itemJson));
   });
 

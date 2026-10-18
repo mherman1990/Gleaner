@@ -5,6 +5,7 @@ import { db, now, openItems, startRun, endRun, P } from '../db.js';
 import { callStructured, callText, structuredParams } from '../llm/client.js';
 import { DAILY_SYSTEM, DAILY_SCHEMA, WEEKLY_SYSTEM } from '../llm/prompts.js';
 import { itemLine, isDelegated } from '../output/markdown.js';
+import { currentRegistry, unregisteredTags, tagKey } from '../registry.js';
 import { buildTodaySheet } from './todaySheet.js';
 import { notify, pushToTablet } from '../notify/index.js';
 
@@ -105,6 +106,26 @@ export async function reminderSweep({ at = new Date() } = {}) {
   return { nudged: due.length, sent };
 }
 
+/**
+ * Tags on this week's items and pages that the registry doesn't cover: for each, how many items and how many pages
+ * carry it. Case variants and a leading # count as one tag. Empty without a registry (nothing to compare against).
+ */
+export function unregisteredSince(since) {
+  const r = currentRegistry();
+  if (!r) return [];
+  const counts = new Map();
+  const add = (tags, unit) => {
+    for (const t of unregisteredTags(P(tags), r)) {
+      const k = tagKey(t), c = counts.get(k) ?? { tag: t, items: 0, pages: 0 };
+      c[unit]++;
+      counts.set(k, c);
+    }
+  };
+  db.prepare('SELECT tags FROM items WHERE first_seen >= ? OR last_seen >= ?').all(since, since).forEach((i) => add(i.tags, 'items'));
+  db.prepare(`SELECT tags FROM pages WHERE status='transcribed' AND page_date >= ?`).all(since).forEach((p) => add(p.tags, 'pages'));
+  return [...counts.values()].sort((a, b) => b.items + b.pages - (a.items + a.pages) || a.tag.localeCompare(b.tag));
+}
+
 export async function weeklyReview({ push = true } = {}) {
   const today = localDate();
   const since = addDays(today, -7);
@@ -118,7 +139,10 @@ export async function weeklyReview({ push = true } = {}) {
     `\n\nCLOSED THIS WEEK:\n${closed.map((i) => `#${i.code} ${i.status} via ${i.closed_by}: ${i.text}`).join('\n') || 'none'}` +
     `\n\nSTILL OPEN:\n${b.items.map(ledgerLine).join('\n') || 'none'}` +
     `\n\nSTALE (no mention in ${config.reminders.staleDays}+ days): ${b.stale.map((i) => `#${i.code}`).join(', ') || 'none'}`;
-  const md = `# Weekly review — week ending ${today}\n\n` + await callText({ model: config.llm.weeklyModel, system: WEEKLY_SYSTEM, content }, 'weekly');
+  const unreg = unregisteredSince(since);
+  const md = `# Weekly review — week ending ${today}\n\n` + await callText({ model: config.llm.weeklyModel, system: WEEKLY_SYSTEM, content }, 'weekly') +
+    (unreg.length ? `\n\n## Unregistered tags\n\nUsed this week but not in projects.yaml. Add the ones worth keeping, as a project or an alias.\n\n` +
+      unreg.map((u) => `- #${u.tag} — ${u.items} ${u.items === 1 ? 'item' : 'items'}, ${u.pages} ${u.pages === 1 ? 'page' : 'pages'}`).join('\n') : '');
   fs.writeFileSync(path.join(paths.out, `weekly-${today}.md`), md);
   if (push) await notify({ title: `Weekly review ready (${closed.length} closed, ${b.items.length} open)`, body: md.slice(0, 1500), priority: 'default' });
   return { date: today, closed: closed.length, open: b.items.length, md };

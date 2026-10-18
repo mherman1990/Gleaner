@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import { config, localDate, isTaskList } from '../config.js';
+import { currentRegistry, registryStatus } from '../registry.js';
 import { db, now, sha256, startRun, endRun, openItems } from '../db.js';
 import { source } from '../adapters/index.js';
 import { renderPage } from './render.js';
@@ -52,11 +53,11 @@ function pageContext(pageRow) {
   return { doc, dateHint };
 }
 
-function buildParams(pageRow, loopsBlock) {
+function buildParams(pageRow, loopsBlock, registry) {
   const { doc, dateHint } = pageContext(pageRow);
   return structuredParams({
     model: config.llm.transcribeModel,
-    systemBlocks: [transcribeSystem(), loopsBlock],
+    systemBlocks: [transcribeSystem(registry), loopsBlock],
     schema: RECORD_PAGE_SCHEMA,
     content: transcribeUser({
       docName: doc?.name || 'notebook', pageIndex: pageRow.page_index, dateHint,
@@ -88,7 +89,7 @@ export function markForRetranscription(scope) {
   return pages.length;
 }
 
-async function applyAll(rows, results) {
+async function applyAll(rows, results, registry) {
   const dates = new Set();
   const itemIds = new Set();
   const tally = { created: 0, carried: 0, closed: 0, failed: 0 };
@@ -99,7 +100,7 @@ async function applyAll(rows, results) {
       db.prepare(`UPDATE pages SET status='error', error=?, batch_id=NULL WHERE id=?`).run(r?.error || 'no result', row.id);
       tally.failed++; continue;
     }
-    const s = await applyPageResult(row, r.input, pageContext(row).dateHint);
+    const s = await applyPageResult(row, r.input, pageContext(row).dateHint, registry);
     dates.add(s.pageDate); if (s.prevDate) dates.add(s.prevDate);
     s.itemIds.forEach((id) => itemIds.add(id));
     tally.created += s.created; tally.carried += s.carried; tally.closed += s.closed;
@@ -114,14 +115,14 @@ const cid = (pageId) => pageId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
 const byPageId = (rows, res) => new Map(rows.map((r) => [r.id, res.get(cid(r.id))]));
 
 /** Collect any finished batches from earlier runs (e.g. the process restarted mid-poll). */
-async function collectPending() {
+async function collectPending(registry) {
   const pending = db.prepare(`SELECT * FROM batches WHERE status='in_progress'`).all();
   const dates = new Set();
   for (const b of pending) {
     const res = await collectBatch(b.id, 'transcribe');
     if (!res) continue;
     const rows = db.prepare(`SELECT * FROM pages WHERE batch_id=?`).all(b.id);
-    const out = await applyAll(rows, byPageId(rows, res));
+    const out = await applyAll(rows, byPageId(rows, res), registry);
     out.dates.forEach((d) => dates.add(d));
     db.prepare(`UPDATE batches SET status='ended', ended_at=? WHERE id=?`).run(now(), b.id);
     log(`batch ${b.id}:`, out.tally);
@@ -136,14 +137,19 @@ async function collectPending() {
 export async function ingest({ mode = 'batch' } = {}) {
   const runId = startRun(`ingest:${mode}`);
   try {
-    const dates = await collectPending();
+    // One registry for the whole run, so the prompts, the ledger and the version recorded all agree even if the
+    // file changes mid-run. Results of a batch submitted earlier are applied with this run's registry.
+    const reg = registryStatus();
+    const registry = currentRegistry();
+    log(`registry ${registry ? `${registry.version} (${registry.projects.length} projects)` : 'none'}${reg.errors ? ` — ${reg.path} rejected: ${reg.errors.join('; ')}` : ''}`);
+    const dates = await collectPending(registry);
     const pulled = await pullAndRender();
     const rows = db.prepare(`SELECT * FROM pages WHERE status IN ('rendered','error') AND png_path IS NOT NULL`).all();
     const loops = openLoopsBlock(openItems());
     let tally = { created: 0, carried: 0, closed: 0, failed: 0 };
 
     if (rows.length && mode === 'batch' && config.llm.useBatch) {
-      const batchId = await submitBatch(rows.map((r) => ({ custom_id: cid(r.id), params: buildParams(r, loops) })));
+      const batchId = await submitBatch(rows.map((r) => ({ custom_id: cid(r.id), params: buildParams(r, loops, registry) })));
       db.prepare(`INSERT INTO batches (id, kind, status, created_at) VALUES (?,?,?,?)`).run(batchId, 'transcribe', 'in_progress', now());
       const upd = db.prepare(`UPDATE pages SET status='queued', batch_id=? WHERE id=?`);
       rows.forEach((r) => upd.run(batchId, r.id));
@@ -155,7 +161,7 @@ export async function ingest({ mode = 'batch' } = {}) {
         await sleep(config.llm.batchPollSeconds * 1000);
       }
       if (res) {
-        const out = await applyAll(rows, byPageId(rows, res));
+        const out = await applyAll(rows, byPageId(rows, res), registry);
         out.dates.forEach((d) => dates.add(d)); tally = out.tally;
         db.prepare(`UPDATE batches SET status='ended', ended_at=? WHERE id=?`).run(now(), batchId);
       } else {
@@ -165,17 +171,17 @@ export async function ingest({ mode = 'batch' } = {}) {
       const results = new Map();
       for (const [i, r] of rows.entries()) {
         const t0 = Date.now();
-        try { results.set(r.id, { ok: true, input: await callStructured(buildParams(r, loops), 'transcribe') }); }
+        try { results.set(r.id, { ok: true, input: await callStructured(buildParams(r, loops, registry), 'transcribe') }); }
         catch (e) { results.set(r.id, { ok: false, error: e.message }); }
         log(`transcribed page ${i + 1}/${rows.length} in ${secs(t0)}${results.get(r.id).ok ? '' : ' (failed)'}`);
       }
-      const out = await applyAll(rows, results);
+      const out = await applyAll(rows, results, registry);
       out.dates.forEach((d) => dates.add(d)); tally = out.tally;
     }
 
     writeDayFiles([...dates]);
     writeOpenLoops();
-    const detail = { ...pulled, pages: rows.length, ...tally, dates: [...dates] };
+    const detail = { ...pulled, pages: rows.length, ...tally, dates: [...dates], registry: registry?.version ?? null };
     log(detail);
     endRun(runId, true, detail);
     return detail;

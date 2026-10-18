@@ -2,3 +2,8 @@ node_modules/
 /.testdata/
 /data/
 *.log
+# the real registry, wherever a copy lands (config/projects.example.yaml is the committed example)
+projects.yaml
+projects.yml
+# the saved last good copy of any registry file
+*.last-good*

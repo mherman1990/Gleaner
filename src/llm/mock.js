@@ -30,8 +30,10 @@ export function mockFor(params, purpose) {
     };
   }
   if (purpose === 'dedupe') {
-    const news = [...text.matchAll(/^NEW (\S+): (.+)$/gm)].map((m) => ({ ref: m[1], t: m[2].trim() }));
-    const olds = [...text.matchAll(/^OPEN (\d+): (.+)$/gm)].map((m) => ({ code: Number(m[1]), t: m[2].trim() }));
+    // Same commitment = same text; the [person] label may differ ("Alex" rewritten from "Alex One").
+    const bare = (t) => t.replace(/ \[[^\]]*\]$/, '').trim();
+    const news = [...text.matchAll(/^NEW (\S+): (.+)$/gm)].map((m) => ({ ref: m[1], t: bare(m[2]) }));
+    const olds = [...text.matchAll(/^OPEN (\d+): (.+)$/gm)].map((m) => ({ code: Number(m[1]), t: bare(m[2]) }));
     return { matches: news.flatMap((n) => olds.filter((o) => o.t === n.t).slice(0, 1).map((o) => ({ new_ref: n.ref, code: o.code }))) };
   }
   if (purpose === 'digest') {
