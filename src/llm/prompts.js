@@ -144,11 +144,12 @@ ${prior}${closed}`,
 // ---- Cross-page dedupe (Haiku) -------------------------------------------------------------
 export const DEDUPE_SYSTEM = `You match newly extracted to-do items against existing items. NEW items were just read from a page;
 "(ticked)" means the line is ticked off there. OPEN items are open or snoozed; CLOSED items are done or dropped ones
-from the same page.
-A match means the SAME commitment rewritten (carried forward, reworded, ticked off, or with a new date) — not merely
-the same topic or the same person. A ticked NEW item may match an OPEN or a CLOSED one; one that isn't ticked never
-matches a CLOSED one (writing a done task again is a new commitment). When unsure, do not match. List only the
-matches: new_ref is the NEW item's label (e.g. "n0"), code the existing item's number. An empty list is a valid answer.`;
+from the same page; ERASED items were erased from a page in the last few days.
+A match means the SAME commitment rewritten (carried forward, moved to another page, reworded, ticked off, or with a
+new date) — not merely the same topic or the same person. Any NEW item may match an OPEN or an ERASED one (a line
+erased from one page and written on another is the same item, moved). Only a ticked NEW item may match a CLOSED one
+(writing a done task again is a new commitment). When unsure, do not match. List only the matches: new_ref is the NEW
+item's label (e.g. "n0"), code the existing item's number. An empty list is a valid answer.`;
 
 /** Which new items are the same commitment as an existing open item. */
 export const MATCH_SCHEMA = object({

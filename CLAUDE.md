@@ -16,7 +16,9 @@ Read README.md for setup and docs/HANDWRITING.md for the notation the extractor 
   - Same-page items update in place via `existing_item_id`.
   - Number closes (`✓14`, `x14`, `14 → Fri`) act on earlier items.
   - New items are deduped against open loops by Haiku; a match bumps `carry_days`.
-  - An item that came from only one page and was erased from it is dropped.
+  - An item that came from only one page and was erased from it is dropped. Items erased in the last 3 days
+    (`MOVED_WITHIN_DAYS`) are dedupe candidates: a line cut from one page and pasted on another (or struck through and
+    rewritten) is the same item, moved, and is reopened; so is one whose line comes back on its own page.
   - In task-list notebooks (`notebooks.taskLists`, default `["To do"]`), every written line is an item. Elsewhere
     only the notation or an explicit commitment makes one. The rule is in the cached system prompt, and the
     per-page flag is in the user turn.

@@ -81,6 +81,53 @@ test('an item erased from its only page is dropped; one also written elsewhere s
   assert.ok(s.itemIds.includes(byCode(1).id));
 });
 
+// One ingest run applies its pages in notebook and page order, so a line moved from page 1 to page 2 (lasso cut and
+// paste, or struck through and rewritten) is first erased, then written; the other way round when it moves back.
+test('a line moved to another page keeps its item, in either order', async () => {
+  const q = page(), p = page();
+  await apply(q, result([item('Book the grain bin inspection'), item('Stay on this page')], { page_date: '2026-10-14' }));
+  await apply(p, result([item('Order the fence posts')], { page_date: '2026-10-15' }));
+  const moved = byCode(1);
+  const run = [];
+  run.push(await apply(q, result([item('Stay on this page', { existing_item_id: byCode(2).id })], { page_date: '2026-10-14' })));
+  assert.deepEqual([byCode(1).status, byCode(1).closed_by], ['dropped', 'erased'], 'between the two pages, it looks erased');
+  run.push(await apply(p, result([item('Order the fence posts', { existing_item_id: byCode(3).id }), item('Book the grain bin inspection')],
+    { page_date: '2026-10-15' })));
+  assert.deepEqual(items().map((i) => [i.code, i.text, i.status]),
+    [[1, 'Book the grain bin inspection', 'open'], [2, 'Stay on this page', 'open'], [3, 'Order the fence posts', 'open']]);
+  const after = byCode(1);
+  assert.deepEqual([after.id, after.closed_by, after.closed_at, after.carry_days, after.last_page_id], [moved.id, null, null, 2, p.id]);
+  assert.deepEqual([run[1].created, run[1].carried], [0, 1]);
+
+  // And back again, with the page it lands on read first: still open, still item 1.
+  await apply(q, result([item('Stay on this page', { existing_item_id: byCode(2).id }), item('Book the grain bin inspection')], { page_date: '2026-10-14' }));
+  await apply(p, result([item('Order the fence posts', { existing_item_id: byCode(3).id })], { page_date: '2026-10-15' }));
+  assert.deepEqual([items().length, byCode(1).status], [3, 'open']);
+});
+
+test('a line that one read missed, and the next one links again, reopens its item', async () => {
+  const p = page();
+  await apply(p, result([item('Grease the invented auger')]));
+  await apply(p, result([])); // the line was missed (or erased and later rewritten)
+  assert.equal(byCode(1).status, 'dropped');
+  await apply(p, result([item('Grease the invented auger', { existing_item_id: byCode(1).id })]));
+  assert.deepEqual([items().length, byCode(1).status, byCode(1).closed_by], [1, 'open', null]);
+  setItemStatus(byCode(1).id, 'dropped', 'ui'); // dropped by hand: a re-read leaves it dropped
+  await apply(p, result([item('Grease the invented auger', { existing_item_id: byCode(1).id })]));
+  assert.equal(byCode(1).status, 'dropped');
+});
+
+test('a moved line that is ticked closes its item; one erased days ago is a new item', async () => {
+  const q = page(), p = page();
+  await apply(q, result([item('Renew the invented permit'), item('Fix the invented gate')]));
+  await apply(q, result([]));
+  await apply(p, result([item('Renew the invented permit', { status: 'done' })]));
+  assert.deepEqual([items().length, byCode(1).status, byCode(1).closed_by], [2, 'done', 'handwriting']);
+  db.prepare(`UPDATE items SET closed_at=? WHERE code=2`).run(new Date(Date.now() - 4 * 86400e3).toISOString()); // erased 4 days ago
+  await apply(p, result([item('Renew the invented permit', { status: 'done', existing_item_id: byCode(1).id }), item('Fix the invented gate')]));
+  assert.deepEqual(items().map((i) => [i.code, i.status]), [[1, 'done'], [2, 'dropped'], [3, 'open']], 'written again after that, it\'s new');
+});
+
 test('carry-forward across days bumps carry_days instead of duplicating', async () => {
   await apply(page(), result([item('Call Brazil desk at USDA FAS')], { page_date: '2026-10-13' }));
   const s = await apply(page(), result([item('Call Brazil desk at USDA FAS')], { page_date: '2026-10-15' }));

@@ -31,10 +31,10 @@ export function mockFor(params, purpose) {
   }
   if (purpose === 'dedupe') {
     // Same commitment = same text; the [person] label may differ ("Alex" rewritten from "Alex One").
-    // A ticked line may match a CLOSED item of its page; one that isn't, only an OPEN one.
+    // A ticked line may match a CLOSED item of its page; any line, an OPEN or an ERASED one.
     const bare = (t) => t.replace(/ \[[^\]]*\]$/, '').trim();
     const news = [...text.matchAll(/^NEW (\S+): (.+?)( \(ticked\))?$/gm)].map((m) => ({ ref: m[1], t: bare(m[2]), ticked: !!m[3] }));
-    const olds = [...text.matchAll(/^(OPEN|CLOSED) (\d+): (.+)$/gm)].map((m) => ({ open: m[1] === 'OPEN', code: Number(m[2]), t: bare(m[3]) }));
+    const olds = [...text.matchAll(/^(OPEN|CLOSED|ERASED) (\d+): (.+)$/gm)].map((m) => ({ open: m[1] !== 'CLOSED', code: Number(m[2]), t: bare(m[3]) }));
     return { matches: news.flatMap((n) => olds.filter((o) => o.t === n.t && (o.open || n.ticked)).slice(0, 1).map((o) => ({ new_ref: n.ref, code: o.code }))) };
   }
   if (purpose === 'digest') {

@@ -14,6 +14,8 @@ import { DEDUPE_SYSTEM, MATCH_SCHEMA } from '../llm/prompts.js';
 const VALID = new Set(['action', 'followup', 'waiting', 'decision', 'idea', 'question']);
 const isDate = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s);
 const isClosed = (status) => status === 'done' || status === 'dropped';
+// A line erased from one page and written on another within this many days is the same item, moved.
+export const MOVED_WITHIN_DAYS = 3;
 
 /** The items with a line on this page (its mentions): the ones a re-read updates, and erasing their line drops. */
 export function priorItemsForPage(pageId) {
@@ -100,28 +102,38 @@ function refreshItem(id, it, pageDate, r) {
   if ((it.status === 'done' || it.status === 'dropped') && cur.status !== it.status) setItemStatus(id, it.status, 'handwriting', 'checked on page');
 }
 
+/** Items erased from their page lately (dropped by "erased"): a line for one written on another page is it, moved. */
+function recentlyErased() {
+  return db.prepare(`SELECT id, code, text, person, status FROM items WHERE status='dropped' AND closed_by='erased' AND closed_at >= ?
+    ORDER BY code`).all(new Date(Date.now() - MOVED_WITHIN_DAYS * 86400e3).toISOString());
+}
+
 /**
  * Which new lines are the same commitment as an existing item. Candidates: the open loops and this page's items that
- * are open or snoozed, and, when a new line is ticked, this page's done and dropped ones (its own and those it closed):
- * a ticked line read again without its id is that item, not a new one. A line that isn't ticked never matches a done
- * or dropped item: writing a done task again is a new commitment. Returns new line index → item id.
+ * are open or snoozed; items erased from a page in the last few days (a line cut from one page and pasted on
+ * another, or struck through and rewritten, is the same item moved); and, when a new line is ticked, this page's done
+ * and dropped ones (its own and those it closed): a ticked line read again without its id is that item, not a new
+ * one. A line that isn't ticked never matches a done or dropped item, erased ones aside: writing a done task again is
+ * a new commitment. Returns new line index → item id.
  */
 async function matchExisting(candidates, excludeIds, pageId) {
   const ticked = (c) => isClosed(c.status);
   const pool = new Map(openItems().map((o) => [o.id, o]));
   for (const o of [...priorItemsForPage(pageId), ...closedOnPage(pageId)]) if (!isClosed(o.status) || candidates.some(ticked)) pool.set(o.id, o);
+  for (const o of recentlyErased()) pool.set(o.id, { ...o, erased: true });
   const existing = [...pool.values()].filter((o) => !excludeIds.has(o.id));
   if (!candidates.length || !existing.length) return new Map();
   const label = (x) => `${x.text}${x.person ? ` [${x.person}]` : ''}`;
+  const kind = (o) => (o.erased ? 'ERASED' : isClosed(o.status) ? 'CLOSED' : 'OPEN');
   const content = `${candidates.map((c, i) => `NEW n${i}: ${label(c)}${ticked(c) ? ' (ticked)' : ''}`).join('\n')}\n\n${
-    existing.map((o) => `${isClosed(o.status) ? 'CLOSED' : 'OPEN'} ${o.code}: ${label(o)}`).join('\n')}`;
+    existing.map((o) => `${kind(o)} ${o.code}: ${label(o)}`).join('\n')}`;
   const res = await callStructured(structuredParams({ model: config.llm.triageModel, systemBlocks: [DEDUPE_SYSTEM], content, schema: MATCH_SCHEMA }), 'dedupe');
   const byCode = new Map(existing.map((o) => [o.code, o]));
   const out = new Map();
   for (const m of res.matches || []) {
     const idx = Number(String(m.new_ref).replace(/^n/, ''));
     const o = byCode.get(m.code);
-    if (o && candidates[idx] && !out.has(idx) && (ticked(candidates[idx]) || !isClosed(o.status))) out.set(idx, o.id);
+    if (o && candidates[idx] && !out.has(idx) && (ticked(candidates[idx]) || !isClosed(o.status) || o.erased)) out.set(idx, o.id);
   }
   return out;
 }
@@ -161,7 +173,14 @@ export async function applyPageResult(pageRow, result, fallbackDate, r = current
     for (const t of pageTags) db.prepare('INSERT OR IGNORE INTO page_tags (page_id, tag) VALUES (?, ?)').run(pageRow.id, t);
     const prior = priorItemsForPage(pageRow.id);
     const touched = new Set();
+    // An item dropped because its line was erased, whose line is here now (moved, rewritten, or missed by one read):
+    // open again, unless the line is ticked, which refreshItem applies.
+    const reopenIfErased = (id, it) => {
+      const cur = db.prepare('SELECT status, closed_by FROM items WHERE id=?').get(id);
+      if (cur.status === 'dropped' && cur.closed_by === 'erased' && !isClosed(it.status)) setItemStatus(id, 'open', 'handwriting');
+    };
     for (const it of same) {
+      reopenIfErased(it.existing_item_id, it);
       refreshItem(it.existing_item_id, it, pageDate, r);
       mention(it.existing_item_id, pageRow.id, pageDate);
       touched.add(it.existing_item_id);
@@ -177,6 +196,7 @@ export async function applyPageResult(pageRow, result, fallbackDate, r = current
       const existing = matches.get(idx);
       if (existing && closedHere.has(existing) && isClosed(statusOf(existing))) return; // the ticked line of an item this page closed
       if (existing) {
+        reopenIfErased(existing, it);
         refreshItem(existing, it, pageDate, r); mention(existing, pageRow.id, pageDate); touched.add(existing);
         if (!priorIds.has(existing)) carried++;
       } else { touched.add(insertItem(it, pageRow.id, pageDate)); created++; }

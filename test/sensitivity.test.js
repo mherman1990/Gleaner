@@ -234,6 +234,20 @@ test('a restricted page stays restricted when a re-read misses its tag, or it is
   assert.deepEqual(await leaks(), []);
 });
 
+test('a line moved off a restricted page stays hidden, and so does the page it moved to', async () => {
+  const crates = [{ text: 'Order the MARKER-LUNA-MOVED crates' }, { text: 'Count the MARKER-LUNA-STAY rovers' }];
+  const q = await page('2026-10-27', ['moonbase'], lines('MARKER-LUNA crates', crates), crates);
+  const stay = { ...crates[1], existing_item_id: idOf(crates[1].text) };
+  await reread(q, '2026-10-27', ['moonbase'], lines('MARKER-LUNA crates', [stay]), [stay]); // cut from here…
+  const p = await page('2026-10-28', ['orchard'], lines('Orchard', [crates[0]]), [crates[0]]); // …and pasted here, untagged
+  const moved = db.prepare('SELECT id, status FROM items WHERE text=?').all(crates[0].text);
+  assert.deepEqual(moved.map((i) => i.status), ['open'], 'the same item, open again, not a new one');
+  const vis = visibility('normal');
+  assert.equal(vis.item(moved[0]), false);
+  assert.equal(vis.page(p), false);
+  assert.deepEqual(await leaks(), []);
+});
+
 test('rows written after the judgement are hidden until the next one', () => {
   const vis = visibility('normal');
   db.prepare(`INSERT INTO pages (id, doc_id, page_index, rm_hash, status, tags) VALUES ('pg-late', 'doc1', 99, 'late', 'transcribed', '["orchard"]')`).run();
