@@ -8,37 +8,42 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config, paths, localDate } from './config.js';
-import { db, P, openItems, setItemStatus } from './db.js';
+import { db, P, listItems, setItemStatus, editItem, EDITABLE, isDate } from './db.js';
 import { renderOpenLoops, dayFilePath, refreshItemOutputs } from './output/markdown.js';
 import { ingest } from './pipeline/ingest.js';
 import { morningDigest, addDays } from './digest/digest.js';
 import { busy, exclusive } from './jobs.js';
 
 const PUBLIC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../public');
-const isDate = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s || '') && !Number.isNaN(Date.parse(s));
+const itemJson = (i) => ({ ...i, tags: P(i.tags), edited: P(i.edited) });
 
 function router() {
   const r = express.Router();
   r.use(express.json());
 
+  // ?status=open (default) | snoozed | closed | all
   r.get('/items', (req, res) => {
-    const status = req.query.status || 'open';
-    let rows = status === 'open' ? openItems() : db.prepare('SELECT * FROM items ORDER BY code DESC LIMIT 500').all();
+    let rows;
+    try { rows = listItems(req.query.status || 'open'); } catch (e) { return res.status(400).json({ error: e.message }); }
     if (req.query.tag) rows = rows.filter((i) => P(i.tags).includes(req.query.tag));
-    res.json(rows.map((i) => ({ ...i, tags: P(i.tags) })));
+    res.json(rows.map(itemJson));
   });
 
-  // Close / reopen / snooze by the printed number: {"status":"done"} | {"status":"snoozed","until":"2026-10-23"}
+  // By the printed number. Close, reopen, or snooze: {"status":"done"} | {"status":"open"} | {"status":"snoozed","until":"2026-10-23"}.
+  // Edit, with or without a status: {"due":"2026-10-23","due_time":"14:00","assignee":"Jen","text":"…"}; null or "" clears.
   r.post('/items/:code', (req, res) => {
     const item = db.prepare('SELECT id FROM items WHERE code=?').get(Number(req.params.code));
     if (!item) return res.status(404).json({ error: 'no such item' });
-    const { status, until, note } = req.body || {};
-    if (!['done', 'dropped', 'open', 'snoozed'].includes(status)) return res.status(400).json({ error: 'status must be done|dropped|open|snoozed' });
+    const body = req.body || {};
+    const { status, until, note } = body;
+    const edits = Object.fromEntries(EDITABLE.filter((k) => k in body).map((k) => [k, body[k]]));
+    if (status === undefined && !Object.keys(edits).length) return res.status(400).json({ error: `send a status and/or any of ${EDITABLE.join(', ')}` });
+    if (status !== undefined && !['done', 'dropped', 'open', 'snoozed'].includes(status)) return res.status(400).json({ error: 'status must be done|dropped|open|snoozed' });
     if (status === 'snoozed' && !isDate(until)) return res.status(400).json({ error: 'snoozed needs until=YYYY-MM-DD' });
-    setItemStatus(item.id, status, 'api', note || null, status === 'snoozed' ? until : null);
+    try { editItem(item.id, edits); } catch (e) { return res.status(400).json({ error: e.message }); }
+    if (status !== undefined) setItemStatus(item.id, status, 'api', note || null, status === 'snoozed' ? until : null);
     refreshItemOutputs([item.id]);
-    const row = db.prepare('SELECT * FROM items WHERE id=?').get(item.id);
-    res.json({ ...row, tags: P(row.tags) });
+    res.json(itemJson(db.prepare('SELECT * FROM items WHERE id=?').get(item.id)));
   });
 
   r.get('/open-loops.md', (_req, res) => res.type('text/markdown').send(renderOpenLoops()));

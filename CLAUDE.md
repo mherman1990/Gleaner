@@ -20,6 +20,11 @@ Read README.md for setup and docs/HANDWRITING.md for the notation the extractor 
   - In task-list notebooks (`notebooks.taskLists`, default `["To do"]`), every written line is an item. Elsewhere
     only the notation or an explicit commitment makes one. The rule is in the cached system prompt, and the
     per-page flag is in the user turn.
+  - Items carry `due` + `due_time` (HH:MM local) and `assignee` (null = Matt). The model reads them from the page
+    (`2pm`, `@Jen`). A hand edit (`editItem()` in `src/db.js`, used by the UI, API and CLI) records the field in
+    `items.edited`, and `refreshItem` never overwrites an edited field. Due date and time count as one field.
+  - Columns added after v0.1.2 are added at startup in `src/db.js` (`ALTER TABLE … ADD COLUMN`), since there is no
+    migration runner. `test/migrate.test.js` opens a v0.1.2 database.
 - **Markdown in `notes/` is generated** from SQLite and is idempotent. Never treat it as input.
 - **Model tiering:** Sonnet transcribes, Haiku dedupes, Sonnet writes the daily plan, Opus writes the weekly review.
   Structured output uses `output_config.format` JSON schemas (`structuredParams` / `structuredOutput` in
@@ -64,13 +69,17 @@ Verified offline with fixtures and the mock LLM, and covered by `npm test`:
 - markdown kept in sync when items change later (closes, carries, API/CLI status changes, a page's date moving),
 - the digest and Today PDF, the reminder sweep, and the weekly review,
 - the API, its token auth, date validation, and snooze,
+- hand edits (text, due date and time, assignee) surviving a re-read, reopen, Undo, and timed reminders; the browser
+  UI's Edit / Undo / Reopen flows were driven in Chromium against fixture data (not in `npm test`),
 - one ingest at a time across the scheduler and the API (`src/jobs.js`).
 
 Verified live on Matt's Pi (v0.1.0, 2026-10-17):
 - rmapi registration, `doctor`, `find -json` (a real notebook's `version` is `0`, so the `version:modifiedClient` key is
   required), and `get` + unzip + render on a real notebook.
 - Umbrel's proxy lets `/api/*` through without its login: `/api/status` gave 401 without the token and 200 with it.
-- The first live transcription failed: v0.1.0 forced `tool_choice`, which Sonnet 5.5 rejects. v0.1.1 uses structured outputs.
+- The first live transcription failed: v0.1.0 forced `tool_choice`, which Sonnet 5.5 rejects. v0.1.1 uses structured outputs,
+  and a live sync transcription with Sonnet 5.5 succeeded. On v0.1.2, `retranscribe "To do"` turned that page's two lines into items.
+- The Release workflow's store sync: v0.1.1 (after a re-run, since `STORE_REPO` was created mid-run) and v0.1.2 (automatic).
 
 Verified against ddvk/rmapi v0.0.35's source:
 - `rmapi -ni -json find /Daily` prints a JSON array of `{id, name, type, version, modifiedClient, parent, tags, …}`.
@@ -85,8 +94,9 @@ better-sqlite3 native module load, and the arm64 container runs fixture ingest a
 
 Not yet verified, in priority order:
 1. **Real model output.**
-   - Check that structured-output calls succeed on the configured models: a live `ingest --sync` with `failed: 0`. A
-     page that fails keeps its reason in `pages.error`.
+   - Transcription (Sonnet) works live. Check the other calls the same way: dedupe (Haiku, the first page with an item
+     already open), the morning digest, the nightly Batch API run, and the weekly review (Opus). A page that fails keeps
+     its reason in `pages.error`.
    - Check that the extraction isn't noisy: tune `NOTATION` and the rules in `src/llm/prompts.js` against Matt's actual pages.
      Pages are only re-read when their ink changes, so after a tuning change run `cli.js retranscribe <scope>`.
      The first live page (a two-line "To do" list) produced no items under the strict rules, which led to taskLists.
@@ -95,8 +105,8 @@ Not yet verified, in priority order:
 2. **rmapi over time.** Confirm that a page edited on the tablet is picked up on the next run.
 3. **On the Pi itself.** Check render time per page and memory use during a batch.
 4. **Umbrel.** Confirm that `PROXY_AUTH_WHITELIST` lets nested paths like `/api/items/14` through, as it does `/api/status`.
-   Other store apps (e.g. Bazarr) rely on `"/api/*"` for nested APIs, so this should hold. The first automated store
-   sync (the first release after `STORE_REPO` / `STORE_REPO_TOKEN` are set) is also untested.
+   Other store apps (e.g. Bazarr) rely on `"/api/*"` for nested APIs, so this should hold.
+5. **v0.1.3 on the Pi.** The startup migration on the live database, and the model reading `2pm` / `@Name` from real pages.
 
 ## Backlog (not v0.1)
 - Read annotations on the `_Today` PDF by compositing strokes over the rendered PDF page, so ticks on the sheet close items.

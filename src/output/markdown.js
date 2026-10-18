@@ -2,15 +2,19 @@
 // so editing them by hand is pointless — edit on the tablet or via the API instead.
 import fs from 'node:fs';
 import path from 'node:path';
-import { paths, localDate } from '../config.js';
+import { paths, localDate, fmtTime } from '../config.js';
 import { db, P, openItems } from '../db.js';
 
 const KIND_ICON = { action: '☐', followup: '→', waiting: '←', decision: 'DEC', idea: 'idea', question: '?' };
 
+/** Someone else has it: a "waiting on" item, or one assigned to another person. */
+export const isDelegated = (i) => i.kind === 'waiting' || !!i.assignee;
+
 export function itemLine(i) {
   const bits = [`**#${i.code}**`, KIND_ICON[i.kind] || '', i.text];
   if (i.person) bits.push(`— ${i.person}`);
-  if (i.due) bits.push(`(due ${i.due})`);
+  if (i.assignee) bits.push(`@${i.assignee}`);
+  if (i.due) bits.push(`(due ${i.due}${i.due_time ? ` ${fmtTime(i.due_time)}` : ''})`);
   if (i.priority) bits.push('!');
   if (i.carry_days > 1) bits.push(`[carried ${i.carry_days}d]`);
   if (i.status !== 'open') bits.push(`*${i.status}*`);
@@ -69,8 +73,8 @@ export function renderOpenLoops() {
     'Overdue': items.filter((i) => i.due && i.due < today),
     'Due today': items.filter((i) => i.due === today),
     'Priority': items.filter((i) => i.priority && !(i.due && i.due <= today)),
-    'Waiting on others': items.filter((i) => i.kind === 'waiting' && !i.priority && !(i.due && i.due <= today)),
-    'Everything else': items.filter((i) => !i.priority && i.kind !== 'waiting' && !(i.due && i.due <= today)),
+    'Waiting on others': items.filter((i) => isDelegated(i) && !i.priority && !(i.due && i.due <= today)),
+    'Everything else': items.filter((i) => !i.priority && !isDelegated(i) && !(i.due && i.due <= today)),
   };
   const out = [`# Open loops — ${today}`, '', `${items.length} open.`, ''];
   for (const [h, list] of Object.entries(groups)) if (list.length) out.push(`## ${h}`, ...list.map(itemLine), '');

@@ -4,7 +4,7 @@
 //  3. Genuinely new items are checked against all open loops (Haiku) — a match means he rewrote/carried it,
 //     which bumps carry_days instead of creating a duplicate. carry_days is the "you keep carrying this" signal.
 import { db, newId, nextCode, J, P, setItemStatus, openItems } from '../db.js';
-import { config } from '../config.js';
+import { config, normTime } from '../config.js';
 import { callStructured, structuredParams } from '../llm/client.js';
 import { DEDUPE_SYSTEM, MATCH_SCHEMA } from '../llm/prompts.js';
 
@@ -24,22 +24,42 @@ function mention(itemId, pageId, pageDate) {
     .run(Math.max(1, days), pageId, pageDate, itemId);
 }
 
+/** The due date and time the model read. A time with no date written means the page date. */
+function dueOf(it, pageDate) {
+  const time = normTime(it.due_time);
+  const due = isDate(it.due) ? it.due : time ? pageDate : null;
+  return { due, due_time: due ? time : null };
+}
+
 function insertItem(it, pageId, pageDate) {
   const id = newId('it');
-  db.prepare(`INSERT INTO items (id, code, text, kind, person, due, priority, tags, status, first_page_id, last_page_id, first_seen, last_seen)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
-    id, nextCode(), it.text.trim(), VALID.has(it.kind) ? it.kind : 'action', it.person || null,
-    isDate(it.due) ? it.due : null, it.priority ? 1 : 0, J(it.tags), 'open', pageId, pageId, pageDate, pageDate);
+  const { due, due_time } = dueOf(it, pageDate);
+  db.prepare(`INSERT INTO items (id, code, text, kind, person, assignee, due, due_time, priority, tags, status, first_page_id, last_page_id, first_seen, last_seen)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    id, nextCode(), it.text.trim(), VALID.has(it.kind) ? it.kind : 'action', it.person || null, it.assignee?.trim() || null,
+    due, due_time, it.priority ? 1 : 0, J(it.tags), 'open', pageId, pageId, pageDate, pageDate);
   if (it.status === 'done' || it.status === 'dropped') setItemStatus(id, it.status, 'handwriting', 'marked on source page');
   mention(id, pageId, pageDate);
   return id;
 }
 
-function refreshItem(id, it) {
-  db.prepare(`UPDATE items SET text=?, person=COALESCE(?, person), due=COALESCE(?, due),
-    priority=MAX(priority, ?), tags=? WHERE id=?`)
-    .run(it.text.trim(), it.person || null, isDate(it.due) ? it.due : null, it.priority ? 1 : 0, J(it.tags), id);
-  const cur = db.prepare('SELECT status FROM items WHERE id=?').get(id);
+/** Re-read or carried item. A value the model didn't find keeps the old one, and a field edited by hand is kept. */
+function refreshItem(id, it, pageDate) {
+  const cur = db.prepare('SELECT * FROM items WHERE id=?').get(id);
+  const hand = new Set(P(cur.edited));
+  const read = dueOf(it, pageDate);
+  const keepDue = hand.has('due') || hand.has('due_time') || !read.due;
+  db.prepare(`UPDATE items SET text=@text, person=@person, assignee=@assignee, due=@due, due_time=@due_time,
+    priority=@priority, tags=@tags WHERE id=@id`).run({
+    id,
+    text: hand.has('text') ? cur.text : it.text.trim(),
+    person: it.person || cur.person,
+    assignee: hand.has('assignee') ? cur.assignee : it.assignee?.trim() || cur.assignee,
+    due: keepDue ? cur.due : read.due,
+    due_time: keepDue ? cur.due_time : read.due_time,
+    priority: Math.max(cur.priority, it.priority ? 1 : 0),
+    tags: J(it.tags),
+  });
   if ((it.status === 'done' || it.status === 'dropped') && cur.status !== it.status) setItemStatus(id, it.status, 'handwriting', 'checked on page');
 }
 
@@ -77,7 +97,7 @@ export async function applyPageResult(pageRow, result, fallbackDate) {
   for (const it of result.items || []) {
     if (!it?.text?.trim()) continue;
     if (it.existing_item_id && priorIds.has(it.existing_item_id)) {
-      refreshItem(it.existing_item_id, it);
+      refreshItem(it.existing_item_id, it, pageDate);
       mention(it.existing_item_id, pageRow.id, pageDate);
       touched.add(it.existing_item_id);
     } else fresh.push(it);
@@ -91,7 +111,7 @@ export async function applyPageResult(pageRow, result, fallbackDate) {
   fresh.forEach((it, idx) => {
     const existing = matches.get(idx);
     if (existing) {
-      refreshItem(existing, it); mention(existing, pageRow.id, pageDate); touched.add(existing);
+      refreshItem(existing, it, pageDate); mention(existing, pageRow.id, pageDate); touched.add(existing);
       if (!priorIds.has(existing)) carried++;
     } else { touched.add(insertItem(it, pageRow.id, pageDate)); created++; }
   });

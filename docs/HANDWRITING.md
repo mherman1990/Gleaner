@@ -13,6 +13,8 @@ or an explicit commitment ("I'll send…"). Ordinary notes stay notes, so the ta
 | `Q: thing` or circled `?` | Open question |
 | `!` in the left margin | Priority |
 | `by Fri` · `@10/22` · `EOW` | Due date (relative to the page date) |
+| `2pm` · `@2:30` · `Fri 3pm` on an item line | Due time. A time with no date means the page's date. |
+| `@Jen thing` · `Jen to …` · `owner: Jen` | Assigned to Jen (shown as waiting on others) |
 | `#45Z` or a circled word | Project tag |
 | checked box `☑` | That item is done |
 | strike through a line | Cancelled; no item is created |
@@ -30,6 +32,9 @@ not on the sheet. The sheet is replaced every morning and its annotations are no
 
 Rewriting the same item on a new day is fine. Gleaner links it to the original and counts the days you've carried it.
 At 3+ days, the Today sheet calls it out.
+
+Anything you set with **Edit** in the browser (text, due date and time, assignee) wins over the page from then on:
+re-reading the page won't overwrite it.
 
 ## Task-list notebooks
 

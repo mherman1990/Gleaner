@@ -46,10 +46,15 @@ On the tablet, create a `/Daily` folder and keep daily notebooks in it. See `doc
 
 | Where | How |
 |---|---|
-| Tablet | Write `✓14` / `x14` / `14 → Fri` on today's page; it's applied that night |
-| Browser | Umbrel → Gleaner: open loops with Done / Fri / Drop buttons, plus *Ingest now* |
-| CLI | `node src/cli.js done 14` · `snooze 14 2026-10-23` · `items` · `digest --push` · `retranscribe "To do"` |
+| Tablet | Write `✓14` / `x14` / `14 → Fri` on today's page; it's applied that night. `2pm` and `@Jen` on an item line set its time and assignee |
+| Browser | Umbrel → Gleaner: open loops with Done / Snooze / Drop (each with Undo) and Edit (text, due date, time, assigned to); snoozed and recently closed items with Reopen; *Ingest now* |
+| CLI | `node src/cli.js done 14` · `snooze 14 2026-10-23` · `reopen 14` · `due 14 2026-10-23 2pm` · `assign 14 Jen` · `items [snoozed\|closed\|all]` · `digest --push` · `retranscribe "To do"` |
 | Claude | Ask in Cowork. Desktop Commander can `curl` `/api/items`, `/api/notes`, `/api/search?q=`, and `POST /api/items/14 {"status":"done"}` |
+
+**Edits by hand win.** A field you set in the browser, CLI, or API (text, due date and time, assignee) is never
+overwritten when the page is read again. Fields you haven't touched still follow the page. Items assigned to someone
+are listed under *Waiting on others*. An item due at a time is nudged on the first reminder sweep within 30 minutes of
+it (`reminders.leadMinutes`); sweeps run every 30 minutes, 7am to 6:30pm on weekdays.
 
 **Task-list notebooks.** In notebooks listed under `notebooks.taskLists` in `config.json` (default `["To do"]`),
 every written line is a to-do, with or without the notation. Elsewhere only marked lines become items.
@@ -61,7 +66,8 @@ pass did.
 
 ## API (Bearer token)
 
-`GET /api/items[?status=all&tag=45Z]` · `POST /api/items/:code {status: done|dropped|open|snoozed, until}` ·
+`GET /api/items[?status=open|snoozed|closed|all&tag=45Z]` ·
+`POST /api/items/:code {status: done|dropped|open|snoozed, until, text, due, due_time, assignee}` (any of them; `null` clears) ·
 `GET /api/open-loops.md` · `GET /api/digest/today` · `GET /api/notes[?from&to]` · `GET /api/notes/:date` ·
 `GET /api/search?q=` · `POST /api/ingest {mode: sync|batch}` · `POST /api/digest {push}` · `GET /api/status`
 

@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import crypto from 'node:crypto';
-import { paths, localDate } from './config.js';
+import { paths, localDate, normTime } from './config.js';
 
 export const db = new Database(paths.db);
 db.pragma('journal_mode = WAL');
@@ -27,6 +27,9 @@ CREATE TABLE IF NOT EXISTS items (
   text TEXT NOT NULL,
   kind TEXT NOT NULL,                  -- action | followup | waiting | decision | idea | question
   person TEXT, due TEXT, priority INTEGER DEFAULT 0, tags TEXT,
+  due_time TEXT,                       -- HH:MM local, only with due
+  assignee TEXT,                       -- who it's assigned to; null = Matt
+  edited TEXT,                         -- JSON list of fields set by hand, which re-transcription leaves alone
   status TEXT NOT NULL DEFAULT 'open', -- open | done | dropped | snoozed
   snooze_until TEXT,
   first_page_id TEXT, last_page_id TEXT,
@@ -52,6 +55,11 @@ CREATE TABLE IF NOT EXISTS usage (
 CREATE INDEX IF NOT EXISTS idx_items_status ON items(status);
 CREATE INDEX IF NOT EXISTS idx_pages_status ON pages(status);
 `);
+
+// Columns added after v0.1.2. CREATE TABLE IF NOT EXISTS leaves an existing table alone, so add them to it here.
+for (const [table, col] of [['items', 'due_time'], ['items', 'assignee'], ['items', 'edited']]) {
+  if (!db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} TEXT`);
+}
 
 export const now = () => new Date().toISOString();
 export const newId = (p = 'it') => `${p}_${crypto.randomBytes(5).toString('hex')}`;
@@ -79,7 +87,16 @@ export function endRun(id, ok, detail) {
 export function openItems() {
   return db.prepare(`SELECT * FROM items
     WHERE status='open' OR (status='snoozed' AND snooze_until <= ?)
-    ORDER BY priority DESC, (due IS NULL), due, first_seen`).all(localDate());
+    ORDER BY priority DESC, (due IS NULL), due, (due_time IS NULL), due_time, first_seen`).all(localDate());
+}
+
+/** open (as openItems) | snoozed (still hidden) | closed (done or dropped, latest first) | all. */
+export function listItems(status = 'open') {
+  if (status === 'open') return openItems();
+  if (status === 'snoozed') return db.prepare(`SELECT * FROM items WHERE status='snoozed' AND snooze_until > ? ORDER BY snooze_until, code`).all(localDate());
+  if (status === 'closed') return db.prepare(`SELECT * FROM items WHERE status IN ('done','dropped') ORDER BY closed_at DESC, code DESC LIMIT 100`).all();
+  if (status === 'all') return db.prepare('SELECT * FROM items ORDER BY code DESC LIMIT 500').all();
+  throw new Error('status must be open|snoozed|closed|all');
 }
 
 export function nextCode() {
@@ -90,4 +107,48 @@ export function setItemStatus(id, status, by, evidence = null, snoozeUntil = nul
   const closing = status === 'done' || status === 'dropped';
   return db.prepare(`UPDATE items SET status=?, snooze_until=?, closed_at=?, closed_by=?, close_evidence=? WHERE id=?`)
     .run(status, snoozeUntil, closing ? now() : null, closing ? by : null, closing ? evidence : null, id).changes;
+}
+
+export const EDITABLE = ['text', 'due', 'due_time', 'assignee'];
+/** A real calendar date as YYYY-MM-DD (Date.parse alone accepts 2026-02-31). */
+export const isDate = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s || '') && !Number.isNaN(Date.parse(s)) && new Date(`${s}T12:00:00Z`).toISOString().startsWith(s);
+const blank = (v) => v === null || v === undefined || String(v).trim() === '';
+
+/**
+ * A hand edit from the UI, API, or CLI. changes holds any of: text; due (YYYY-MM-DD, or null to clear it and its
+ * time); due_time ("14:00", "2pm", or null; with no due date it means today); assignee (a name, or null for Matt).
+ * Each field that changes is recorded in items.edited, so re-transcribing the page never overwrites it. A new due
+ * date or time resets the nudge count. Throws on invalid input. Returns the fields that changed.
+ */
+export function editItem(id, changes) {
+  const cur = db.prepare('SELECT * FROM items WHERE id=?').get(id);
+  if (!cur) throw new Error('no such item');
+  const next = {};
+  if ('text' in changes) {
+    if (blank(changes.text)) throw new Error('text cannot be empty');
+    next.text = String(changes.text).trim().slice(0, 300);
+  }
+  if ('due' in changes) {
+    if (!blank(changes.due) && !isDate(changes.due)) throw new Error('due must be YYYY-MM-DD');
+    next.due = blank(changes.due) ? null : changes.due;
+    if (!next.due) next.due_time = null;
+  }
+  if ('due_time' in changes) {
+    const t = normTime(changes.due_time);
+    if (!blank(changes.due_time) && !t) throw new Error('due_time must be a time like 14:00 or 2pm');
+    if (t && !('due' in next ? next.due : cur.due)) {
+      if ('due' in next) throw new Error('a time needs a due date');
+      next.due = localDate();
+    }
+    next.due_time = t;
+  }
+  if ('assignee' in changes) next.assignee = blank(changes.assignee) ? null : String(changes.assignee).trim().slice(0, 60);
+
+  const changed = Object.keys(next).filter((k) => next[k] !== cur[k]);
+  if (!changed.length) return [];
+  const edited = [...new Set([...P(cur.edited), ...changed])];
+  const reset = changed.includes('due') || changed.includes('due_time');
+  db.prepare(`UPDATE items SET ${changed.map((k) => `${k}=@${k}`).join(', ')}, edited=@edited
+    ${reset ? ', last_nudged=NULL, nudge_count=0' : ''} WHERE id=@id`).run({ ...next, edited: J(edited), id });
+  return changed;
 }

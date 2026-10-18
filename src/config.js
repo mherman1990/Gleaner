@@ -48,6 +48,7 @@ const defaults = {
     staleDays: 7,     // open loop with no mention in N days → called out in weekly review
     carryFlagAt: 3,   // rewritten on N separate days → "you keep carrying this"
     maxNudgesPerItem: 3,
+    leadMinutes: 30,  // an item due at a time is nudged on the first sweep within this many minutes of it
   },
   notify: {
     teamsWebhookUrl: '',        // Power Automate "When a Teams webhook request is received"
@@ -135,4 +136,29 @@ export function localDate(d = new Date()) {
 }
 export function localWeekday(d = new Date()) {
   return new Intl.DateTimeFormat('en-US', { timeZone: config.timezone, weekday: 'long' }).format(d);
+}
+/** The time of day (HH:MM, 24-hour) in the configured timezone. */
+export function localTime(d = new Date()) {
+  return new Intl.DateTimeFormat('en-GB', { timeZone: config.timezone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(d);
+}
+
+/** "14:05", "9:30", "2pm", "2:30 PM" → "HH:MM" (24-hour). Anything else, a bare "14" included, → null. */
+export function normTime(s) {
+  const m = String(s ?? '').trim().toLowerCase().match(/^(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m?\.?$|^(\d{1,2}):(\d{2})$/);
+  if (!m) return null;
+  let h = Number(m[1] ?? m[4]);
+  const min = Number(m[2] ?? m[5] ?? 0);
+  if (m[3]) {
+    if (h < 1 || h > 12) return null;
+    h = (h % 12) + (m[3] === 'p' ? 12 : 0);
+  }
+  if (h > 23 || min > 59) return null;
+  return `${String(h).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
+}
+
+/** "14:00" → "2pm", "09:30" → "9:30am", for display. */
+export function fmtTime(t) {
+  if (!t) return '';
+  const [h, m] = t.split(':').map(Number);
+  return `${h % 12 || 12}${m ? `:${String(m).padStart(2, '0')}` : ''}${h < 12 ? 'am' : 'pm'}`;
 }

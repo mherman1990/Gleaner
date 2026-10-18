@@ -143,6 +143,28 @@ test('HTTP API: token, items, status changes, notes', { skip }, async (t) => {
   assert.match(fs.readFileSync(dayFile, 'utf8'), new RegExp(`#${code}\\*\\*.*\\*done\\*`), 'day file shows the new status');
   assert.ok(!(await (await get('/api/open-loops.md')).text()).includes(`#${code}**`));
 
+  // Closed items can be listed and reopened.
+  assert.deepEqual((await (await get('/api/items?status=closed')).json()).map((i) => i.code), [code]);
+  assert.equal((await get('/api/items?status=bogus')).status, 400);
+  const reopened = await (await post(`/api/items/${code}`, { status: 'open' })).json();
+  assert.deepEqual([reopened.status, reopened.closed_at], ['open', null]);
+  assert.equal((await (await get('/api/items')).json()).length, 5);
+
+  // Edits: due date and time, assignee; with or without a status.
+  assert.equal((await post(`/api/items/${code}`, {})).status, 400);
+  assert.equal((await post(`/api/items/${code}`, { due_time: '25:00' })).status, 400);
+  assert.equal((await post(`/api/items/${code}`, { due: 'Friday' })).status, 400);
+  const edited = await (await post(`/api/items/${code}`, { due: '2026-10-23', due_time: '2pm', assignee: 'Jen', ignored: 1 })).json();
+  assert.deepEqual([edited.due, edited.due_time, edited.assignee, edited.status], ['2026-10-23', '14:00', 'Jen', 'open']);
+  assert.deepEqual(edited.edited, ['due', 'due_time', 'assignee']);
+  assert.match(fs.readFileSync(dayFile, 'utf8'), new RegExp(`#${code}\\*\\*.*@Jen \\(due 2026-10-23 2pm\\)`), 'day file shows the edit');
+  await post('/api/items/2', { due: null, assignee: 'Kelsey' });
+  assert.match(await (await get('/api/open-loops.md')).text(), /## Waiting on others\n- \*\*#2\*\*.*@Kelsey/, 'assigned items are grouped as waiting on others');
+  const snoozed = await (await post(`/api/items/${code}`, { status: 'snoozed', until: '2999-01-01', assignee: null })).json();
+  assert.deepEqual([snoozed.status, snoozed.assignee], ['snoozed', null]);
+  assert.deepEqual((await (await get('/api/items?status=snoozed')).json()).map((i) => i.code), [code]);
+  await post(`/api/items/${code}`, { status: 'done' });
+
   assert.equal((await get(`/api/notes/${today}`)).status, 200);
   assert.equal((await get('/api/notes/..%2F..%2Fgleaner')).status, 400);
   assert.equal((await get('/api/notes?from=garbage')).status, 400);

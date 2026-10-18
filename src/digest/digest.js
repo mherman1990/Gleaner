@@ -1,10 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { config, paths, localDate, localWeekday } from '../config.js';
+import { config, paths, localDate, localWeekday, localTime, fmtTime } from '../config.js';
 import { db, now, openItems, startRun, endRun, P } from '../db.js';
 import { callStructured, callText, structuredParams } from '../llm/client.js';
 import { DAILY_SYSTEM, DAILY_SCHEMA, WEEKLY_SYSTEM } from '../llm/prompts.js';
-import { itemLine } from '../output/markdown.js';
+import { itemLine, isDelegated } from '../output/markdown.js';
 import { buildTodaySheet } from './todaySheet.js';
 import { notify, pushToTablet } from '../notify/index.js';
 
@@ -17,14 +17,15 @@ export function buckets(today = localDate()) {
     items,
     overdue: items.filter((i) => i.due && i.due < today),
     dueToday: items.filter((i) => i.due === today),
-    waiting: items.filter((i) => i.kind === 'waiting'),
+    waiting: items.filter(isDelegated),
     carrying: items.filter((i) => i.carry_days >= config.reminders.carryFlagAt).sort((a, b) => b.carry_days - a.carry_days),
     stale: items.filter((i) => (i.last_seen || i.first_seen) < staleCut),
   };
 }
 
 const ledgerLine = (i) =>
-  `#${i.code} ${i.kind}: ${i.text}${i.person ? ` [${i.person}]` : ''}${i.due ? ` due=${i.due}` : ''}${i.priority ? ' PRIORITY' : ''}` +
+  `#${i.code} ${i.kind}: ${i.text}${i.person ? ` [${i.person}]` : ''}${i.assignee ? ` assigned=${i.assignee}` : ''}` +
+  `${i.due ? ` due=${i.due}${i.due_time ? ` ${i.due_time}` : ''}` : ''}${i.priority ? ' PRIORITY' : ''}` +
   ` carried=${i.carry_days}d first=${i.first_seen} last=${i.last_seen}${P(i.tags).length ? ` tags=${P(i.tags).join(',')}` : ''}`;
 
 export async function morningDigest({ push = true } = {}) {
@@ -77,21 +78,28 @@ export async function morningDigest({ push = true } = {}) {
   } catch (e) { endRun(runId, false, e.stack || e.message); throw e; }
 }
 
-/** Every 30 min in working hours: nudge due-today and overdue items, at most once per item per day. */
-export async function reminderSweep() {
-  const today = localDate();
+/**
+ * Every 30 min in working hours: nudge due-today and overdue items, at most once per item per day. An item due
+ * today at a set time waits until the first sweep within reminders.leadMinutes of it.
+ */
+export async function reminderSweep({ at = new Date() } = {}) {
+  const today = localDate(at);
+  const lead = new Date(at.getTime() + config.reminders.leadMinutes * 60000);
+  const soon = localDate(lead) > today ? '24:00' : localTime(lead);
   const b = buckets(today);
   // last_nudged is a UTC timestamp; compare its local date (a 6:30pm CST nudge is already "tomorrow" in UTC).
   const due = [...b.overdue, ...b.dueToday].filter((i) =>
+    (i.due < today || !i.due_time || i.due_time <= soon) &&
     (!i.last_nudged || localDate(new Date(i.last_nudged)) < today) && i.nudge_count < config.reminders.maxNudgesPerItem);
   if (!due.length) return { nudged: 0 };
   await notify({
     title: `${due.length} due${b.overdue.length ? ` (${b.overdue.length} overdue)` : ''}`,
-    body: due.map((i) => `#${i.code} ${i.text}${i.due < today ? ` — was due ${i.due}` : ''}`).join('\n'),
+    body: due.map((i) => `#${i.code} ${i.text}${i.assignee ? ` (@${i.assignee})` : ''}` +
+      `${i.due < today ? ` — was due ${i.due}` : i.due_time ? ` — at ${fmtTime(i.due_time)}` : ''}`).join('\n'),
     priority: due.some((i) => i.due < today) ? 'high' : 'default',
   });
   const upd = db.prepare(`UPDATE items SET last_nudged=?, nudge_count=nudge_count+1 WHERE id=?`);
-  due.forEach((i) => upd.run(now(), i.id));
+  due.forEach((i) => upd.run(at.toISOString(), i.id));
   return { nudged: due.length };
 }
 
