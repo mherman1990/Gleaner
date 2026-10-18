@@ -18,6 +18,7 @@
   "schedule": {
     "ingestNightly": "30 21 * * *",
     "ingestMorning": "15 6 * * 1-5",
+    "ingestDaytime": "0 8-16/2 * * 1-5",
     "morningDigest": "30 6 * * 1-5",
     "reminderSweep": "*/30 7-18 * * 1-5",
     "weeklyReview": "0 18 * * 0"

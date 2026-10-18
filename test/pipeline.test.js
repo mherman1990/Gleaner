@@ -4,7 +4,7 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { tempEnv, copyFixtures, rendererMissing } from './helpers.js';
+import { tempEnv, copyFixtures, rendererMissing, pushSink } from './helpers.js';
 
 const fx = copyFixtures();
 const dataDir = tempEnv('pipeline', { GLEANER_FIXTURE_DIR: fx, GLEANER_API_TOKEN: 'test-token', GLEANER_PORT: '0' });
@@ -91,9 +91,13 @@ test('digest writes markdown and pushes the Today PDF', { skip }, async () => {
   assert.equal(pdf.subarray(0, 5).toString(), '%PDF-');
 });
 
-test('reminder sweep nudges due items once per day', { skip }, async () => {
+test('reminder sweep nudges due items once per day', { skip }, async (t) => {
+  const sink = await pushSink();
+  t.after(() => { sink.close(); config.notify.ntfyUrl = ''; });
+  config.notify.ntfyUrl = sink.url;
   assert.ok((await reminderSweep()).nudged > 0);
   assert.equal((await reminderSweep()).nudged, 0);
+  assert.equal(sink.hits.length, 1);
 });
 
 test('weekly review is written to out/', { skip }, async () => {

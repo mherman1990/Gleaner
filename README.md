@@ -13,7 +13,8 @@ tablet ─(Connect cloud)→ rmapi ─→ changed pages only ─→ rmc → PNG 
 
 Model tiering: **Sonnet** transcribes (handwriting accuracy is the whole game), **Haiku** dedupes carried-forward items,
 **Sonnet** writes the daily plan, and **Opus** writes the weekly review. Transcription instructions and the open-loop list are prompt-cached;
-the nightly run uses the Batch API, and the 6:15am top-up runs sync for anything written late. Every page's
+the nightly run uses the Batch API. On weekdays a 6:15am top-up and reads at 8, 10, 12, 2, and 4 run sync, so the
+day's writing shows up the same day. Every page's
 ink is fingerprinted, so a page is only re-transcribed when it actually changes. Token use is tracked at `/api/status`.
 
 ## Setup on Umbrel
@@ -54,7 +55,9 @@ On the tablet, create a `/Daily` folder and keep daily notebooks in it. See `doc
 **Edits by hand win.** A field you set in the browser, CLI, or API (text, due date and time, assignee) is never
 overwritten when the page is read again. Fields you haven't touched still follow the page. Items assigned to someone
 are listed under *Waiting on others*. An item due at a time is nudged on the first reminder sweep within 30 minutes of
-it (`reminders.leadMinutes`); sweeps run every 30 minutes, 7am to 6:30pm on weekdays.
+it (`reminders.leadMinutes`); sweeps run every 30 minutes, 7am to 6:30pm on weekdays. Nudges go to Teams and/or
+ntfy, and one only counts toward `maxNudgesPerItem` once a channel accepted it, so nothing is used up while neither
+is set.
 
 **Task-list notebooks.** In notebooks listed under `notebooks.taskLists` in `config.json` (default `["To do"]`),
 every written line is a to-do, with or without the notation. Elsewhere only marked lines become items.

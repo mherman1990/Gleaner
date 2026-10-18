@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -25,6 +26,18 @@ export function copyFixtures() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gleaner-fx-'));
   fs.cpSync(FIXTURES, dir, { recursive: true });
   return dir;
+}
+
+/** A local stand-in for an ntfy server: records each push, answers with `status`. */
+export async function pushSink(status = 200) {
+  const hits = [];
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => { hits.push({ title: req.headers.title, body }); res.writeHead(status).end(); });
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  return { url: `http://127.0.0.1:${server.address().port}/gleaner`, hits, close: () => server.close() };
 }
 
 /** The renderer needs rmc and cairosvg on PATH (see README → Development). */

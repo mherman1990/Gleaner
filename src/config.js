@@ -40,6 +40,7 @@ const defaults = {
   schedule: {
     ingestNightly: '30 21 * * *',        // 9:30pm daily — batch, cheap
     ingestMorning: '15 6 * * 1-5',       // 6:15am weekdays — sync top-up for late pages
+    ingestDaytime: '0 8-16/2 * * 1-5',   // 8, 10, 12, 2, 4 on weekdays — sync, so the day's writing shows up the same day
     morningDigest: '30 6 * * 1-5',       // 6:30am weekdays — digest + Today sheet + push
     reminderSweep: '*/30 7-18 * * 1-5',  // due/overdue nudges during working hours
     weeklyReview: '0 18 * * 0',          // Sunday 6pm
