@@ -24,15 +24,18 @@ export function priorItemsForPage(pageId) {
 }
 
 /**
- * Items from other pages that this page closed or snoozed, by number or by ticking a line for them, with no line of
- * their own here. The prompt lists them apart from the page's own items, so a re-read links a ticked line back to its
- * item (closed by now, so no longer in the open list) instead of reading it as new. A line linked to one stands for
- * that close, so it changes nothing about the item but a tick.
+ * The items this page closed or snoozed, by number or by ticking a line for them (page_closes). The prompt doesn't
+ * list them (the model would read "✓14" back as item 14's line); a ticked line read again for one is matched in code
+ * and by the dedupe instead, and changes nothing about it but a tick.
  */
 export function closedOnPage(pageId) {
   return db.prepare(`SELECT id, code, text, person, status FROM items WHERE id IN (SELECT item_id FROM page_closes WHERE page_id = ?)
-    AND id NOT IN (SELECT item_id FROM item_mentions WHERE page_id = ?) ORDER BY code`).all(pageId, pageId);
+    ORDER BY code`).all(pageId);
 }
+
+// The words of an item, for telling the same line from another: case, spacing and punctuation don't count.
+const words = (s) => String(s ?? '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+const sameLine = (a, b) => words(a.text) === words(b.text) && (!a.person || !b.person || words(a.person) === words(b.person));
 
 function mention(itemId, pageId, pageDate) {
   // Upsert: a re-transcription can move the page to another date (e.g. a date written in later).
@@ -109,17 +112,17 @@ function recentlyErased() {
 }
 
 /**
- * Which new lines are the same commitment as an existing item. Candidates: the open loops and this page's items that
- * are open or snoozed; items erased from a page in the last few days (a line cut from one page and pasted on
- * another, or struck through and rewritten, is the same item moved); and, when a new line is ticked, this page's done
- * and dropped ones (its own and those it closed): a ticked line read again without its id is that item, not a new
- * one. A line that isn't ticked never matches a done or dropped item, erased ones aside: writing a done task again is
- * a new commitment. Returns new line index → item id.
+ * Which new lines are the same commitment as an existing item. Candidates: the open loops and this page's items
+ * (pageItems: its own and those it closed or snoozed) that are open or snoozed; items erased from a page in the last
+ * few days (a line cut from one page and pasted on another, or struck through and rewritten, is the same item moved);
+ * and, when a new line is ticked, this page's done and dropped ones: a ticked line read again without its id is that
+ * item, not a new one. A line that isn't ticked never matches a done or dropped item, erased ones aside: writing a
+ * done task again is a new commitment. Returns new line index → item id.
  */
-async function matchExisting(candidates, excludeIds, pageId) {
+async function matchExisting(candidates, excludeIds, pageItems) {
   const ticked = (c) => isClosed(c.status);
   const pool = new Map(openItems().map((o) => [o.id, o]));
-  for (const o of [...priorItemsForPage(pageId), ...closedOnPage(pageId)]) if (!isClosed(o.status) || candidates.some(ticked)) pool.set(o.id, o);
+  for (const o of pageItems) if (!isClosed(o.status) || candidates.some(ticked)) pool.set(o.id, o);
   for (const o of recentlyErased()) pool.set(o.id, { ...o, erased: true });
   const existing = [...pool.values()].filter((o) => !excludeIds.has(o.id));
   if (!candidates.length || !existing.length) return new Map();
@@ -147,19 +150,29 @@ async function matchExisting(candidates, excludeIds, pageId) {
 export async function applyPageResult(pageRow, result, fallbackDate, r = currentRegistry()) {
   const pageDate = isDate(result.page_date) ? result.page_date : fallbackDate;
   const items = (result.items || []).filter((raw) => raw?.text?.trim()).map((raw) => normalize(raw, r));
-  const priorIds = new Set(priorItemsForPage(pageRow.id).map((p) => p.id));
-  const closedHere = new Map(closedOnPage(pageRow.id).map((i) => [i.id, i]));
+  const own = priorItemsForPage(pageRow.id);
+  const priorIds = new Set(own.map((p) => p.id));
+  // Items this page closed or snoozed without a line of its own for them.
+  const closedHere = new Map(closedOnPage(pageRow.id).filter((i) => !priorIds.has(i.id)).map((i) => [i.id, i]));
   const same = items.filter((it) => priorIds.has(it.existing_item_id));
-  // A line linked to an item this page only closed or snoozed stands for that close: at most it ticks the item off.
-  // Unless the item is done and the line isn't ticked: that's the task written again, a new commitment.
-  const ticks = items.filter((it) => closedHere.has(it.existing_item_id) && (isClosed(it.status) || !isClosed(closedHere.get(it.existing_item_id).status)));
-  const fresh = items.filter((it) => !same.includes(it) && !ticks.includes(it));
+  const unlinked = items.filter((it) => !same.includes(it));
+  // A ticked line with the very words of a done or dropped item of this page (one of its lines, or one it closed) is
+  // that item read again without its id. Matched here rather than by the dedupe, so an open item with the same words
+  // (this week's copy of a recurring task) isn't closed in its place.
+  const reread = new Map();
+  for (const it of unlinked) {
+    if (!isClosed(it.status)) continue;
+    const hit = [...own, ...closedHere.values()].find((o) => isClosed(o.status) && sameLine(o, it) && ![...reread.values()].includes(o.id));
+    if (hit) reread.set(it, hit.id);
+  }
+  const fresh = unlinked.filter((it) => !reread.has(it));
 
   // Carry-forward detection for new items, before anything is written: if the call fails, the page stays as it was
   // and is read again next run. This page's own earlier items are candidates too, so one the model re-extracted
   // without existing_item_id (or reworded) matches and keeps its number instead of being dropped as "erased" and
   // re-created under a new one, and a ticked line doesn't become a second, done copy of the item it closed.
-  const matches = await matchExisting(fresh, new Set([...same, ...ticks].map((it) => it.existing_item_id)), pageRow.id);
+  const matches = await matchExisting(fresh, new Set([...same.map((it) => it.existing_item_id), ...reread.values()]),
+    [...own, ...closedHere.values()]);
 
   // Then everything at once, under the write lock: no reader sees the page's new text without its items (which the
   // sensitivity filter goes by), and every decision uses the rows as they are now, not as before the call.
@@ -179,22 +192,20 @@ export async function applyPageResult(pageRow, result, fallbackDate, r = current
       const cur = db.prepare('SELECT status, closed_by FROM items WHERE id=?').get(id);
       if (cur.status === 'dropped' && cur.closed_by === 'erased' && !isClosed(it.status)) setItemStatus(id, 'open', 'handwriting');
     };
-    for (const it of same) {
+    // The ticked line of a done item this page closed, read again: the page already closed it, so nothing changes.
+    const statusOf = (id) => db.prepare('SELECT status FROM items WHERE id=?').get(id)?.status;
+    const closedTick = (id) => closedHere.has(id) && isClosed(statusOf(id));
+    for (const it of [...same, ...[...reread].map(([line, id]) => ({ ...line, existing_item_id: id }))]) {
+      if (closedTick(it.existing_item_id)) continue;
       reopenIfErased(it.existing_item_id, it);
       refreshItem(it.existing_item_id, it, pageDate, r);
       mention(it.existing_item_id, pageRow.id, pageDate);
       touched.add(it.existing_item_id);
     }
-    const statusOf = (id) => db.prepare('SELECT status FROM items WHERE id=?').get(id)?.status;
-    for (const it of ticks) {
-      if (!isClosed(it.status) || isClosed(statusOf(it.existing_item_id))) continue;
-      setItemStatus(it.existing_item_id, it.status, 'handwriting', 'checked on page');
-      touched.add(it.existing_item_id);
-    }
     let created = 0, carried = 0;
     fresh.forEach((it, idx) => {
       const existing = matches.get(idx);
-      if (existing && closedHere.has(existing) && isClosed(statusOf(existing))) return; // the ticked line of an item this page closed
+      if (existing && closedTick(existing)) return;
       if (existing) {
         reopenIfErased(existing, it);
         refreshItem(existing, it, pageDate, r); mention(existing, pageRow.id, pageDate); touched.add(existing);

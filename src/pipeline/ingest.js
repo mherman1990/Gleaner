@@ -4,7 +4,7 @@ import { currentRegistry, registryStatus } from '../registry.js';
 import { db, now, sha256, startRun, endRun, openItems } from '../db.js';
 import { source } from '../adapters/index.js';
 import { renderPage } from './render.js';
-import { applyPageResult, priorItemsForPage, closedOnPage } from './ledger.js';
+import { applyPageResult, priorItemsForPage } from './ledger.js';
 import { structuredParams, callStructured, submitBatch, collectBatch } from '../llm/client.js';
 import { transcribeSystem, openLoopsBlock, RECORD_PAGE_SCHEMA, transcribeUser } from '../llm/prompts.js';
 import { writeDayFiles, writeOpenLoops, mentionDates } from '../output/markdown.js';
@@ -61,7 +61,7 @@ function buildParams(pageRow, loopsBlock, registry) {
     schema: RECORD_PAGE_SCHEMA,
     content: transcribeUser({
       docName: doc?.name || 'notebook', pageIndex: pageRow.page_index, dateHint,
-      typedText: pageRow.typed_text, priorItems: priorItemsForPage(pageRow.id), closedItems: closedOnPage(pageRow.id),
+      typedText: pageRow.typed_text, priorItems: priorItemsForPage(pageRow.id),
       imageB64: fs.readFileSync(pageRow.png_path).toString('base64'),
       taskList: isTaskList(doc?.name),
     }),

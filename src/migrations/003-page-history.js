@@ -6,12 +6,24 @@
 //   erased and written over, stays restricted.
 // Both are only added to. For pages read before this migration, page_tags starts from each page's current tags, and
 // page_closes from the close notation in its text: numbers after ✓, x, ✗, done, drop or snooze, or before ✓ or →
-// (one, or a list: "✓14, 15", "12 & 14 → Fri"), linked to the items with those numbers (a page that only looks like
-// it closes one is hidden too), and the words a handwriting close quoted as its evidence. A checked box that left no
-// such trace can't be found.
+// (one, a list or a range: "✓14, 15", "✓ 14 15", "12 & 14 → Fri", "✓ 12–15"), linked to the items with those
+// numbers (a page that only looks like it closes one is hidden too), and the words a handwriting close quoted as its
+// evidence. A checked box that left no such trace can't be found.
 export const id = '003-page-history';
 
-const NUMS = String.raw`#?\d{1,6}(?:\s*(?:,|&|\+|\/|\band\b)\s*#?\d{1,6})*`; // 14 | 14, 15 | #14 & #15 | 14 and 15
+// 14 | 14, 15 | 14 15 | #14 & #15 | 14 and 15 | 14; 15 | 12–15
+const NUMS = String.raw`#?\d{1,6}(?:(?:\s*(?:,|;|&|\+|\/|\band\b|[-–—])\s*|\s+)#?\d{1,6})*`;
+const RANGE_MAX = 50; // a "range" wider than this is more likely two numbers than one close
+/** Every number a NUMS match names: each of a list, and each in a range. */
+function numbers(list) {
+  const out = [];
+  for (const m of list.matchAll(/(\d+)(?:\s*[-–—]\s*#?(\d+))?/g)) {
+    const [a, b] = [Number(m[1]), m[2] === undefined ? null : Number(m[2])];
+    if (b !== null && b > a && b - a <= RANGE_MAX) for (let n = a; n <= b; n++) out.push(n);
+    else out.push(a, ...(b === null ? [] : [b]));
+  }
+  return out;
+}
 const TICK = String.raw`[✓✔☑✅]\uFE0F?`;
 const CROSS = String.raw`[xX✗✘×✖❌☒]\uFE0F?`;
 const CLOSE_REFS = [
@@ -52,9 +64,7 @@ CREATE TABLE IF NOT EXISTS page_tags (
 
     const text = p.transcription_md || '';
     for (const re of CLOSE_REFS) {
-      for (const m of text.matchAll(re)) {
-        for (const num of m[1].match(/\d+/g)) if (byCode.has(Number(num))) addClose.run(p.id, byCode.get(Number(num)));
-      }
+      for (const m of text.matchAll(re)) for (const n of numbers(m[1])) if (byCode.has(n)) addClose.run(p.id, byCode.get(n));
     }
     const lower = text.toLowerCase();
     for (const i of quoted) if (lower.includes(i.words)) addClose.run(p.id, i.id);

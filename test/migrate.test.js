@@ -80,10 +80,18 @@ test('pages read before the upgrade are linked to the items their text closes, a
   page.run('pg-e', 5, '[]', 'done 1 and drop 2');
   page.run('pg-f', 6, '[]', '✔️3 (an emoji tick)\n7, 12 → Fri');
   page.run('pg-g', 7, '[]', 'Done today: ✓5, 8 and ❌ 6');
+  // Items 9-20, and one page per notation form, each closing what its name says.
+  for (let c = 9; c <= 20; c++) item.run(`it_${c}`, c, `Fixture task ${c}`, 'done', null, 'handwriting', null);
+  const forms = { 'pg-h': ['Done 9', [9]], 'pg-i': ['dropped: 10', [10]], 'pg-j': ['✅ 11 & 12', [11, 12]], 'pg-k': ['13 and 14 ✓', [13, 14]],
+    'pg-l': ['#15 + #16 -> Mon', [15, 16]], 'pg-m': ['☒ 17/18', [17, 18]], 'pg-n': ['✖️19 not needed', [19]], 'pg-o': ['✓ 9 10 sent', [9, 10]],
+    'pg-p': ['✓ 12–15 all sent', [12, 13, 14, 15]], 'pg-q': ['done 16; 17', [16, 17]], 'pg-r': ['18 20 ✓', [18, 20]], 'pg-s': ['drop 19', [19]] };
+  Object.entries(forms).forEach(([id, [text]], i) => page.run(id, 8 + i, '[]', text));
   migrate(v014);
-  assert.deepEqual(v014.prepare('SELECT page_id, item_id FROM page_closes ORDER BY page_id, item_id').all().map((r) => `${r.page_id}:${r.item_id}`),
-    ['pg-a:it_c', 'pg-b:it_d', 'pg-c:it_e', 'pg-c:it_f', 'pg-c:it_h', 'pg-e:it_a', 'pg-e:it_b', 'pg-f:it_c', 'pg-f:it_g',
-      'pg-g:it_e', 'pg-g:it_f', 'pg-g:it_h'], 'every number of a list, emoji marks, and no link from prose or the words Gleaner writes itself');
+  const links = (id) => v014.prepare('SELECT i.code FROM page_closes c JOIN items i ON i.id=c.item_id WHERE c.page_id=? ORDER BY i.code').all(id).map((r) => r.code);
+  for (const [id, [text, codes]] of Object.entries(forms)) assert.deepEqual(links(id), codes, text);
+  assert.deepEqual(v014.prepare(`SELECT page_id, item_id FROM page_closes WHERE page_id < 'pg-h' ORDER BY page_id, item_id`).all().map((r) => `${r.page_id}:${r.item_id}`),
+    ['pg-a:it_c', 'pg-b:it_d', 'pg-c:it_14', 'pg-c:it_e', 'pg-c:it_f', 'pg-c:it_h', 'pg-e:it_a', 'pg-e:it_b', 'pg-f:it_12', 'pg-f:it_c',
+      'pg-f:it_g', 'pg-g:it_e', 'pg-g:it_f', 'pg-g:it_h'], 'every number of a list, emoji marks, and no link from prose (box14, 6 people, Q3 → Q4) or the words Gleaner writes itself');
   assert.deepEqual(v014.prepare('SELECT page_id, tag FROM page_tags ORDER BY page_id, tag').all().map((r) => `${r.page_id}:${r.tag}`),
     ['pg-1:45Z', 'pg-1:widget-permits', 'pg-a:orchard']);
   v014.close();

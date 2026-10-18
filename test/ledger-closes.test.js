@@ -1,7 +1,9 @@
 // A page that closed or snoozed items from other pages (by number, "✓1" / "3 → Fri", or by ticking a line for them)
-// is read again: the prompt lists those items apart from the page's own lines; a line the model links to one only
-// ticks it off (its tags, due date and carry count stay); a done task written again is a new item; and the dedupe
-// offers done items only to ticked lines, labelled as closed. Real SDK against the fake API. All content is invented.
+// is read again. The prompt doesn't list those items, so the model can't read a close mark back as the item's line.
+// A ticked line with the words of a done item of the page is that item read again, matched in code (so this week's open
+// copy of a recurring task isn't closed in its place) and changing nothing; a done task written again unticked is a new
+// item; and the dedupe offers done items only to ticked lines, labelled as closed. Real SDK against the fake API.
+// All content is invented.
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -26,7 +28,7 @@ function dedupe(params) {
   const news = [...text.matchAll(/^NEW (\S+): (.+?)( \(ticked\))?$/gm)].map((m) => ({ ref: m[1], t: m[2], ticked: !!m[3] }));
   const olds = [...text.matchAll(/^(OPEN|CLOSED) (\d+): (.+)$/gm)].map((m) => ({ open: m[1] === 'OPEN', code: Number(m[2]), t: m[3] }));
   return { matches: news.flatMap((n) => {
-    const fits = olds.filter((o) => (closest ? near(o.t, n.t) >= 0.5 : o.t === n.t));
+    const fits = olds.filter((o) => (closest ? near(o.t, n.t) > 0.5 : o.t === n.t));
     const pick = closest ? fits.sort((a, b) => near(b.t, n.t) - near(a.t, n.t))[0] : fits.find((o) => o.open || n.ticked);
     return pick ? [{ new_ref: n.ref, code: pick.code }] : [];
   }) };
@@ -58,66 +60,95 @@ const mentionsOn = (p) => db.prepare('SELECT item_id FROM item_mentions WHERE pa
 const eventsSince = (id) => db.prepare('SELECT item_code, field FROM events WHERE id > ?').all(id);
 const lastEvent = () => db.prepare('SELECT COALESCE(MAX(id), 0) AS n FROM events').get().n;
 
-test('a line linked to an item the page closed by number only ticks it off; a done task written again is new', async () => {
+test('a ticked line read again for an item the page closed changes nothing; a done task written again is new', async () => {
   const a = newPage();
-  await read(a, '2026-10-13', [line('Order the invented seed', { tags: ['orchard'] }), line('Call Tom about the invented letter', { tags: ['orchard'], due: '2026-10-15' }),
+  await read(a, '2026-10-13', [line('Order the invented seed', { tags: ['orchard'], due: '2026-10-15' }), line('Call Tom about the invented letter'),
     line('Sign the invented lease')]);
   const [seed, call] = ['Order the invented seed', 'Call Tom about the invented letter'].map(row);
   const b = newPage();
   await read(b, '2026-10-14', [], [{ code: seed.code, action: 'done', snooze_until: null, evidence: `✓${seed.code}` },
     { code: call.code, action: 'snooze', snooze_until: '2999-01-01', evidence: `${call.code} → Fri` }]);
-  const before = { seed: row('Order the invented seed'), call: row('Call Tom about the invented letter') };
+  const before = row('Order the invented seed');
   const mark = lastEvent();
-  // A re-read where the model links the "✓" and "→ Fri" lines to the listed items, reading "→ Fri" as a due date, and
-  // the seed order is written again unticked as a new order.
-  await read(b, '2026-10-14', [
-    line('Order the invented seed', { existing_item_id: seed.id, status: 'done' }),
-    line('Call Tom about the invented letter', { existing_item_id: call.id, due: '2026-10-17' }),
-    line('Order the invented seed', { existing_item_id: seed.id }),
-  ]);
-  assert.deepEqual(row('Call Tom about the invented letter'), before.call, 'the snoozed item keeps its tags, due date, snooze and carry count');
-  assert.deepEqual(row('Order the invented seed'), before.seed);
+  // The seed order is written again, unticked, as a new order, next to a ticked new line (so the dedupe is offered
+  // the page's done items). The fake Haiku picks the closest wording, the done seed order: the code refuses it.
+  closest = true;
+  try {
+    await read(b, '2026-10-14', [line('Order the invented seed'), line('Sweep the invented barn', { status: 'done' })]);
+  } finally { closest = false; }
   assert.deepEqual(db.prepare('SELECT status FROM items WHERE text=? ORDER BY code').all('Order the invented seed').map((i) => i.status), ['done', 'open']);
-  assert.deepEqual(mentionsOn(b), [db.prepare(`SELECT id FROM items WHERE text='Order the invented seed' AND status='open'`).get().id],
-    'only the new order is a line of this page');
-  assert.deepEqual(eventsSince(mark).map((e) => e.field), ['created'], 'nothing changed on the closed or snoozed item');
+  // Then the old seed line, ticked, comes back without its id (the prompt never listed it): that close, read again.
+  const fresh = db.prepare(`SELECT id FROM items WHERE text='Order the invented seed' AND status='open'`).get().id;
+  await read(b, '2026-10-14', [line('Order the invented seed', { existing_item_id: fresh }), line('Order the invented seed', { status: 'done' }),
+    line('Sweep the invented barn', { status: 'done', existing_item_id: row('Sweep the invented barn').id })]);
+  assert.deepEqual(row('Order the invented seed'), before, 'the done item keeps its tags, due date and carry count');
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM items WHERE text=?').get('Order the invented seed').n, 2);
+  assert.ok(!mentionsOn(b).includes(seed.id), 'and has no line on this page');
+  assert.deepEqual(eventsSince(mark).map((e) => e.field), ['created', 'created', 'status'], 'only the two new lines (one ticked) change anything');
 
-  // A tick on an item this page snoozed closes it, and changes nothing else.
-  await read(b, '2026-10-14', [line('Call Tom about the invented letter', { existing_item_id: call.id, status: 'done', due: '2026-10-17' })]);
-  assert.deepEqual([row('Call Tom about the invented letter').status, row('Call Tom about the invented letter').due], ['done', '2026-10-15']);
+  // Ticked as dropped this time: still done, as the page closed it.
+  await read(b, '2026-10-14', [line('Order the invented seed', { status: 'dropped' })]);
+  assert.equal(row('Order the invented seed').status, 'done');
+  // A tick on the item this page snoozed closes it.
+  await read(b, '2026-10-14', [line('Call Tom about the invented letter', { status: 'done' })]);
+  assert.equal(row('Call Tom about the invented letter').status, 'done');
   assert.equal(row('Sign the invented lease').status, 'open', 'an item the page never named is untouched');
 });
 
-test('the dedupe offers done items only to a ticked line, and labels them closed', async () => {
+test('a ticked recurring task read again is its own item, not this week\'s open copy with the same words', async () => {
+  const own = newPage(); // last week's page, with the task ticked off on it
+  await read(own, '2026-10-06', [line('Send the weekly invented report', { status: 'done' })]);
+  const closer = newPage(); // last week's other page, which closed another week's copy by number
+  await read(closer, '2026-10-07', [line('Water the invented plants')]);
+  await read(newPage(), '2026-10-07', [line('Mail the invented invoices')]);
+  const invoices = row('Mail the invented invoices');
+  await read(closer, '2026-10-07', [line('Water the invented plants', { existing_item_id: row('Water the invented plants').id })],
+    [{ code: invoices.code, action: 'done', snooze_until: null, evidence: `✓${invoices.code}` }]);
+  await read(newPage(), '2026-10-13', [line('Send the weekly invented report'), line('Mail the invented invoices')]); // this week's, open
+  const thisWeek = db.prepare(`SELECT id, text FROM items WHERE status='open' AND text IN ('Send the weekly invented report', 'Mail the invented invoices')`).all();
+  assert.equal(thisWeek.length, 2);
+
+  dedupes.length = 0;
+  await read(own, '2026-10-06', [line('Send the weekly invented report', { status: 'done' })]);
+  await read(closer, '2026-10-07', [line('Water the invented plants', { existing_item_id: row('Water the invented plants').id }),
+    line('Mail the invented invoices', { status: 'done' })]);
+  assert.deepEqual(thisWeek.map((i) => db.prepare('SELECT status FROM items WHERE id=?').get(i.id).status), ['open', 'open']);
+  assert.deepEqual(dedupes, [], 'matched in code, before any dedupe call');
+});
+
+test('the dedupe offers done items only to a ticked line, labelled closed', async () => {
   const a = newPage();
-  await read(a, '2026-10-15', [line('Send the weekly invented report'), line('Return the invented ladder')]);
-  const [old, ladder] = ['Send the weekly invented report', 'Return the invented ladder'].map(row);
-  const b = newPage(); // closes last week's report by number and ticks off the ladder's line
+  await read(a, '2026-10-15', [line('File the monthly invented tally'), line('Return the invented ladder')]);
+  const [old, ladder] = ['File the monthly invented tally', 'Return the invented ladder'].map(row);
+  const b = newPage(); // closes last month's report by number and ticks off the ladder's line
   await read(b, '2026-10-15', [line('Fold the invented flyers')], [{ code: old.code, action: 'done', snooze_until: null, evidence: `✓${old.code}` },
     { code: ladder.code, action: 'done', snooze_until: null, evidence: '☑' }]);
   const flyers = row('Fold the invented flyers');
-  await read(newPage(), '2026-10-16', [line('Send this week\'s weekly invented report')]); // this week's, open
-  const thisWeek = row('Send this week\'s weekly invented report');
+  await read(newPage(), '2026-10-16', [line('File this month\'s monthly invented tally')]); // this month's, open
+  const thisMonth = row('File this month\'s monthly invented tally');
 
-  // On b, the recurring task is written again, unticked: it's this week's report (a carry), not last week's done one,
-  // though last week's is worded closer.
+  // On b, the recurring task is written again, unticked: it's this month's report (a carry), not last month's done
+  // one, though last month's is worded closer.
   closest = true;
   dedupes.length = 0;
   try {
-    await read(b, '2026-10-15', [line('Fold the invented flyers', { existing_item_id: flyers.id }), line('Send the weekly invented report')]);
+    await read(b, '2026-10-15', [line('Fold the invented flyers', { existing_item_id: flyers.id }), line('File the monthly invented tally')]);
   } finally { closest = false; }
   assert.doesNotMatch(dedupes.join('\n'), /^CLOSED/m, 'no done item is offered to a line that isn\'t ticked');
-  assert.equal(db.prepare('SELECT carry_days FROM items WHERE id=?').get(thisWeek.id).carry_days, thisWeek.carry_days + 1, 'it carries this week\'s');
+  assert.equal(db.prepare('SELECT carry_days FROM items WHERE id=?').get(thisMonth.id).carry_days, thisMonth.carry_days + 1, 'it carries this month\'s');
 
-  // The ladder's ticked line read again without its id: offered the page's done items, labelled, and taken as the
-  // item it ticked off.
+  // The ladder's ticked line read again, reworded and without its id: offered the page's done items, labelled, and
+  // taken as the item it ticked off.
+  closest = true;
   dedupes.length = 0;
   const count = db.prepare('SELECT COUNT(*) AS n FROM items').get().n;
-  await read(b, '2026-10-15', [line('Fold the invented flyers', { existing_item_id: flyers.id }), line('Return the invented ladder', { status: 'done' })]);
-  assert.match(dedupes.join('\n'), /^NEW n0: Return the invented ladder \(ticked\)$/m);
+  try {
+    await read(b, '2026-10-15', [line('Fold the invented flyers', { existing_item_id: flyers.id }), line('Return the ladder', { status: 'done' })]);
+  } finally { closest = false; }
+  assert.match(dedupes.join('\n'), /^NEW n0: Return the ladder \(ticked\)$/m);
   assert.match(dedupes.join('\n'), new RegExp(`^CLOSED ${ladder.code}: Return the invented ladder$`, 'm'));
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM items').get().n, count, 'no copy of the done item');
-  assert.deepEqual(mentionsOn(b).sort(), [flyers.id, thisWeek.id].sort(), 'and the page has no line of it');
+  assert.ok(!mentionsOn(b).includes(ladder.id), 'and no line of it on this page');
 });
 
 // Pages 1 and 2 of the fixture notebook: page 1 has two lines; once they exist (pages are read before any is applied),
@@ -139,13 +170,13 @@ function script(params) {
       closes: [{ code: code('Book the invented hall'), action: 'done', snooze_until: null, evidence: `✓${code('Book the invented hall')}` },
         { code: code('Print the invented tickets'), action: 'done', snooze_until: null, evidence: '☑' }] };
   }
-  if (page === 2) { // read again: they're listed as this page's closes, and the ticked line is linked to its item
-    return { ...base, transcription_md: '☑ Print the invented tickets', items: [line('Print the invented tickets', { existing_item_id: prior.get('Print the invented tickets'), status: 'done' })] };
+  if (page === 2) { // read again: the ticked line is read as a done item, with no id to give it
+    return { ...base, transcription_md: '☑ Print the invented tickets', items: [line('Print the invented tickets', { status: 'done' })] };
   }
   return { ...base, transcription_md: '' };
 }
 
-test('the prompt lists the items a page closed apart from its own lines, and the ticked line read again is linked', { skip: rendererMissing }, async () => {
+test('the prompt doesn\'t list the items a page closed, and the ticked line read again is no copy', { skip: rendererMissing }, async () => {
   transcribe = script;
   for (run = 1; run <= 2; run++) {
     if (run > 1) markForRetranscription('all');
@@ -156,10 +187,8 @@ test('the prompt lists the items a page closed apart from its own lines, and the
   const requests = fake.requests.length;
   markForRetranscription('all');
   await ingest({ mode: 'sync' });
-  const page2 = fake.requests.slice(requests).map((r) => userText(r.params)).find((t) => /page 2\b/.test(t));
-  const ids = Object.fromEntries(db.prepare(`SELECT text, id FROM items`).all().map((i) => [i.text, i.id]));
-  assert.match(page2, /ITEMS PREVIOUSLY EXTRACTED FROM THIS PAGE:\n- none\n/);
-  assert.match(page2, new RegExp(`ITEMS THIS PAGE CLOSED OR SNOOZED[^\\n]*\\n- id=${ids['Book the invented hall']}: Book the invented hall \\[done\\]\\n` +
-    `- id=${ids['Print the invented tickets']}: Print the invented tickets \\[done\\]`));
+  const page2 = fake.requests.slice(requests).filter((r) => r.purpose === 'transcribe').map((r) => userText(r.params)).find((t) => /page 2\b/.test(t));
+  assert.match(page2, /ITEMS PREVIOUSLY EXTRACTED FROM THIS PAGE:\n- none$/);
+  assert.doesNotMatch(page2, /invented hall|invented tickets/, 'the items it closed aren\'t in its prompt');
   assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM items WHERE text='Print the invented tickets'`).get().n, 1, 'no copy of the ticked item');
 });

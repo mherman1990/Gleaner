@@ -122,13 +122,10 @@ export const RECORD_PAGE_SCHEMA = object({
   },
 });
 
-export function transcribeUser({ docName, pageIndex, dateHint, typedText, priorItems, closedItems = [], imageB64, taskList = false }) {
-  const list = (items) => items.map((i) => `- id=${i.id}: ${i.text} [${i.status}]`).join('\n');
-  const prior = priorItems.length ? list(priorItems) : '- none';
-  // Items from other pages that this one closed or snoozed: so a ticked line for one is linked, not read as new.
-  const closed = closedItems.length ? `\nITEMS THIS PAGE CLOSED OR SNOOZED, by number or by a ticked line (they are not new items):
-${list(closedItems)}
-A ticked line that is one of these: set existing_item_id to its id.` : '';
+export function transcribeUser({ docName, pageIndex, dateHint, typedText, priorItems, imageB64, taskList = false }) {
+  const prior = priorItems.length
+    ? priorItems.map((i) => `- id=${i.id}: ${i.text} [${i.status}]`).join('\n')
+    : '- none';
   return [
     { type: 'image', source: { type: 'base64', media_type: 'image/png', data: imageB64 } },
     {
@@ -136,7 +133,7 @@ A ticked line that is one of these: set existing_item_id to its id.` : '';
       text: `Notebook: "${docName}", page ${pageIndex + 1}. If no date is written, the notebook was last modified ${dateHint}.
 ${taskList ? 'This notebook is a TASK LIST: every written line that reads as something to do is an item.\n' : ''}${typedText ? `Typed text on this page (exact):\n${typedText}\n` : ''}
 ITEMS PREVIOUSLY EXTRACTED FROM THIS PAGE:
-${prior}${closed}`,
+${prior}`,
     },
   ];
 }
@@ -148,7 +145,8 @@ from the same page; ERASED items were erased from a page in the last few days.
 A match means the SAME commitment rewritten (carried forward, moved to another page, reworded, ticked off, or with a
 new date) — not merely the same topic or the same person. Any NEW item may match an OPEN or an ERASED one (a line
 erased from one page and written on another is the same item, moved). Only a ticked NEW item may match a CLOSED one
-(writing a done task again is a new commitment). When unsure, do not match. List only the matches: new_ref is the NEW
+(writing a done task again is a new commitment), and a ticked item that could be a CLOSED one or an OPEN one is the
+CLOSED one: that line read again. When unsure, do not match. List only the matches: new_ref is the NEW
 item's label (e.g. "n0"), code the existing item's number. An empty list is a valid answer.`;
 
 /** Which new items are the same commitment as an existing open item. */

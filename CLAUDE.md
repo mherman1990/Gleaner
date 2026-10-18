@@ -45,9 +45,11 @@ Read README.md for setup and docs/HANDWRITING.md for the notation the extractor 
     (`page_closes`). Both tables (migration 003) are only added to, so a re-read never unhides anything; rows another
     process wrote after the judgement are hidden; with no registry it's a 503. Each GET route reads in one
     transaction with its `visibility()` call, and `POST /items/:code` checks and writes under one write lock.
-    `applyPageResult` writes a page and its items in one transaction, after the dedupe call. The prompt and the dedupe
-    see the items a page closed or snoozed (`closedOnPage`), listed apart from its own lines, so a ticked line read
-    again links back instead of duplicating; a line linked to one only ticks it off.
+    `applyPageResult` writes a page and its items in one transaction, after the dedupe call. The prompt lists only a
+    page's own lines; the items it closed or snoozed (`closedOnPage`) are kept out of it, so the model can't read "✓14"
+    back as item 14's line. A ticked line read again without its id is matched in code (same words as a done item of
+    the page) or by the dedupe (done items are offered, labelled CLOSED, to ticked lines only), and a match to an item
+    the page closed changes nothing.
     `test/sensitivity.test.js` sweeps every GET route; a new route needs a probe there.
   - Every item write goes through `changeItem()` / `recordEvent()` in `src/db.js`, which write the `events` rows
     with the client; `editItem()` and `setItemStatus()` require one. `src/events.js` reads them (`/api/events`, the
