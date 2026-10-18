@@ -48,7 +48,7 @@ pre{white-space:pre-wrap;background:var(--card);border:1px solid var(--line);bor
 <datalist id="people"></datalist>
 <div id="toast" role="status" aria-live="polite" hidden><span id="toastMsg"></span><button id="undo">Undo</button></div>
 <script>
-const API = 'ui/api';
+const API = 'ui-api';
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const today = new Date().toLocaleDateString('en-CA');

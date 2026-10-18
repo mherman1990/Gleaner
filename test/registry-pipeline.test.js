@@ -89,7 +89,7 @@ test('the API shows the flags, filters by alias or unknown tag in any case, and 
   const server = startServer();
   await new Promise((r) => server.once('listening', r));
   t.after(() => server.close());
-  const url = `http://127.0.0.1:${server.address().port}/ui/api/items`;
+  const url = `http://127.0.0.1:${server.address().port}/ui-api/items`;
   const get = async (q) => (await fetch(`${url}${q}`)).json();
   const b = (await get('')).find((i) => i.person === 'Alex');
   assert.deepEqual([b.unregistered_tags, b.person_ambiguous], [['mystery-tag'], true]);

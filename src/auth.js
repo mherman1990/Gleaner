@@ -4,7 +4,7 @@
 // The file is re-read when it changes (no restart), written by rename with mode 0600, and never logged.
 //
 // GLEANER_API_TOKEN still works through v0.2.x as client "legacy", with every scope and sensitivity "all".
-// The browser UI (/ui/api, behind Umbrel's login) is client "ui", with the same rights.
+// The browser UI (/ui-api, behind Umbrel's login) is client "ui", with the same rights.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -52,9 +52,12 @@ export function tokens() {
 /** Whether /api can accept anything: a token in tokens.json or the legacy env token. */
 export const apiEnabled = () => tokens().length > 0 || !!config.server.apiToken;
 
-/** The client a request's Authorization header names, or null. Compares hashes in constant time. */
+/**
+ * The client a request's Authorization header names, or null. Compares hashes in constant time. The scheme is
+ * case-insensitive, and everything after it is the token, so a legacy token with a space in it still works.
+ */
 export function authenticate(header) {
-  const m = /^Bearer (\S+)$/.exec(String(header || ''));
+  const m = /^Bearer[ \t]+(.+?)[ \t]*$/i.exec(String(header || ''));
   if (!m) return null;
   const given = Buffer.from(hashOf(m[1]), 'hex');
   let found = null;
@@ -78,6 +81,26 @@ function save(list) {
   } finally { fs.rmSync(tmp, { force: true }); }
 }
 
+/** Run fn holding tokens.json.lock, so two `token` commands at once can't lose each other's change. */
+function withLock(fn) {
+  const lock = `${config.auth.tokensPath}.lock`;
+  fs.mkdirSync(path.dirname(lock), { recursive: true });
+  for (const end = Date.now() + 5000; ;) {
+    try { fs.closeSync(fs.openSync(lock, 'wx', 0o600)); break; } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+      let age = 0;
+      try { age = Date.now() - fs.statSync(lock).mtimeMs; } catch { continue; } // just released
+      if (age > 10000) { fs.rmSync(lock, { force: true }); continue; } // left by a process that died
+      if (Date.now() > end) throw new Error(`${lock} is held by another token command; try again`);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+    }
+  }
+  try {
+    cache.stamp = null; // read the file as it is now, not as this process last saw it
+    return fn();
+  } finally { fs.rmSync(lock, { force: true }); }
+}
+
 function current() {
   const list = tokens();
   if (cache.error) throw new Error(`${config.auth.tokensPath} can't be read (${cache.error}); fix or move it first`);
@@ -98,20 +121,25 @@ export function addToken(client, { scopes, sensitivity = 'normal' }) {
   if (!CLIENT_NAME.test(client ?? '')) throw new Error('client must be lowercase letters, digits and dashes (up to 32)');
   if (RESERVED.includes(client)) throw new Error(`"${client}" is reserved for Gleaner's own attributions`);
   if (!SENSITIVITIES.includes(sensitivity)) throw new Error('sensitivity must be all or normal');
-  const list = current();
-  if (list.some((t) => t.client === client)) throw new Error(`${client} already has a token; revoke it first`);
-  const token = `gl_${crypto.randomBytes(32).toString('base64url')}`;
-  save([...list, { client, hash: hashOf(token), scopes: parseScopes(scopes), sensitivity, created: new Date().toISOString() }]);
-  return token;
+  const scopeList = parseScopes(scopes);
+  return withLock(() => {
+    const list = current();
+    if (list.some((t) => t.client === client)) throw new Error(`${client} already has a token; revoke it first`);
+    const token = `gl_${crypto.randomBytes(32).toString('base64url')}`;
+    save([...list, { client, hash: hashOf(token), scopes: scopeList, sensitivity, created: new Date().toISOString() }]);
+    return token;
+  });
 }
 
 /** Remove a client's token. Returns whether there was one. */
 export function revokeToken(client) {
-  const list = current();
-  const rest = list.filter((t) => t.client !== client);
-  if (rest.length === list.length) return false;
-  save(rest);
-  return true;
+  return withLock(() => {
+    const list = current();
+    const rest = list.filter((t) => t.client !== client);
+    if (rest.length === list.length) return false;
+    save(rest);
+    return true;
+  });
 }
 
 /** The clients, without their hashes, for `token list` and doctor. */

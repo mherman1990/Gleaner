@@ -7,15 +7,15 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { tempEnv } from './helpers.js';
 
-const dataDir = tempEnv('events', { GLEANER_PORT: '0' });
+const dataDir = tempEnv('events', { GLEANER_PORT: '0', GLEANER_API_TOKEN: 'legacy-secret' });
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 fs.copyFileSync(path.join(ROOT, 'test', 'fixtures', 'registry.yaml'), path.join(dataDir, 'projects.yaml'));
 
-const { db, setItemStatus, startRun, endRun } = await import('../src/db.js');
+const { db, setItemStatus, startRun, endRun, recordEvent } = await import('../src/db.js');
 const { applyPageResult } = await import('../src/pipeline/ledger.js');
 const { router, startServer } = await import('../src/server.js');
 const { addToken } = await import('../src/auth.js');
@@ -96,12 +96,14 @@ test('every API mutation writes events attributed to its client, and closed_by i
     if (want === 'done' || want === 'dropped') assert.equal((await res.json()).closed_by, 'mayer');
   }
   mark = lastId();
-  assert.equal((await post(`/api/items/${budget}`, mayer, { status: 'dropped' })).status, 200);
+  const first = db.prepare('SELECT closed_by, closed_at FROM items WHERE code=?').get(budget);
+  assert.equal((await post(`/api/items/${budget}`, 'legacy-secret', { status: 'dropped', note: 'again' })).status, 200);
   assert.deepEqual(since(mark), [], 'setting the status an item already has writes nothing');
+  assert.deepEqual(db.prepare('SELECT closed_by, closed_at FROM items WHERE code=?').get(budget), first, 'and keeps the first close');
 
   mark = lastId();
   const chart = codeOf('Print the seating chart');
-  assert.equal((await fetch(`${base}/ui/api/items/${chart}`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+  assert.equal((await fetch(`${base}/ui-api/items/${chart}`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ status: 'done' }) })).status, 200);
   assert.deepEqual(since(mark).map((e) => [e.client, e.field, e.new]), [['ui', 'status', 'done']]);
   assert.equal(db.prepare('SELECT closed_by FROM items WHERE code=?').get(chart).closed_by, 'ui');
@@ -118,6 +120,19 @@ test('every route that can change an item is exercised above', () => {
   assert.deepEqual(posts.filter((p) => !['/items/:code', '/ingest', '/digest'].includes(p)), [], 'a new mutating route needs an events test');
 });
 
+test('a change made while another process is writing waits for it instead of failing', async () => {
+  // Another process (a `docker exec … cli.js`) takes the write lock, changes an item, and commits 300 ms later.
+  const code = codeOf('Print the seating chart');
+  const child = spawn(process.execPath, ['-e', `
+    const db = new (require('better-sqlite3'))(${JSON.stringify(path.join(dataDir, 'gleaner.db'))});
+    db.exec('BEGIN IMMEDIATE'); db.prepare('UPDATE items SET priority=1 WHERE code=?').run(${code});
+    console.log('locked'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300); db.exec('COMMIT');`], { cwd: ROOT });
+  await new Promise((r) => child.stdout.once('data', r));
+  setItemStatus(idOf(code), 'snoozed', 'cli', null, '2999-03-01'); // reads the item, then writes it
+  await new Promise((r) => child.on('close', r));
+  assert.deepEqual(db.prepare('SELECT status, priority FROM items WHERE code=?').get(code), { status: 'snoozed', priority: 1 });
+});
+
 test('a change needs a client to attribute it to', () => {
   assert.throws(() => setItemStatus(idOf(1), 'done', ''), /client/);
 });
@@ -128,13 +143,26 @@ test('/api/events: since today, a date or an ISO time; by client; bad input is a
   assert.deepEqual(Object.keys(all[0]), ['id', 'at', 'client', 'item_code', 'field', 'old', 'new']);
   const byMayer = await (await call('/api/events?since=2000-01-01&client=mayer', mayer)).json();
   assert.ok(byMayer.length && byMayer.every((e) => e.client === 'mayer'));
-  assert.equal((await (await call('/api/events?since=today', mayer)).json()).length, all.length, 'everything here happened today');
+  const count = (iso) => db.prepare('SELECT COUNT(*) AS n FROM events WHERE at >= ?').get(iso).n;
+  assert.equal((await (await call('/api/events?since=today', mayer)).json()).length, count(parseSince('today')));
   assert.equal((await (await call('/api/events?since=2999-01-01T00:00:00Z', mayer)).json()).length, 0);
-  assert.equal((await (await call('/api/events', mayer)).json()).length, all.length, 'default: the last 24 hours');
-  for (const bad of ['yesterday', '10/18/2026', '2026-13-40', '2026-10-18Tnoon']) assert.equal((await call(`/api/events?since=${bad}`, mayer)).status, 400, bad);
+  assert.equal((await (await call('/api/events', mayer)).json()).length, count(new Date(Date.now() - 24 * 3600e3).toISOString()), 'default: the last 24 hours');
+  for (const bad of ['yesterday', '10/18/2026', '2026-13-40', '2026-02-30', '2026-10-18Tnoon']) assert.equal((await call(`/api/events?since=${bad}`, mayer)).status, 400, bad);
+  assert.equal((await call('/api/events?client=mayer&client=ui', mayer)).status, 400, 'one client at a time');
+  assert.equal((await call('/api/events?after=x', mayer)).status, 400);
   assert.equal(parseSince('2026-10-18'), localMidnight('2026-10-18').toISOString());
   assert.equal(localMidnight('2026-10-18').toISOString(), '2026-10-18T05:00:00.000Z', 'Chicago midnight, daylight time');
   assert.equal(localMidnight('2026-12-18').toISOString(), '2026-12-18T06:00:00.000Z', 'and standard time');
+});
+
+test('/api/events pages: at most 1,000 at a time, X-More, and after=<last id>', async () => {
+  const mark = lastId();
+  for (let i = 0; i < 1005; i++) recordEvent('handwriting', 1, 'text', `t${i}`, `t${i + 1}`);
+  const page1 = await call(`/api/events?since=2000-01-01&after=${mark}`, mayer);
+  const first = await page1.json();
+  assert.deepEqual([first.length, page1.headers.get('x-more'), first[0].id], [1000, 'true', mark + 1]);
+  const page2 = await call(`/api/events?since=2000-01-01&after=${first.at(-1).id}`, mayer);
+  assert.deepEqual([(await page2.json()).length, page2.headers.get('x-more')], [5, 'false']);
 });
 
 test('the morning digest says what people and clients changed since the last digest', async () => {
@@ -146,14 +174,29 @@ test('the morning digest says what people and clients changed since the last dig
   await read(await newPage(), '2026-10-18', [item('Sort the flyers')]);
   await post(`/api/items/${codeOf('Sort the flyers')}`, mayer, { status: 'snoozed', until: '2999-01-01' });
   await post(`/api/items/${codeOf('Sort the flyers')}`, mayer, { status: 'snoozed', until: '2999-02-01' });
-  await fetch(`${base}/ui/api/items/${codeOf('Fold the flyers')}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'Fold the flyers in thirds' }) });
+  const erasable = await newPage();
+  await read(erasable, '2026-10-18', [item('Tape the flyers up')]);
+  await read(erasable, '2026-10-18', []); // erased on the tablet: not a person's or a client's change
+  await fetch(`${base}/ui-api/items/${codeOf('Fold the flyers')}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'Fold the flyers in thirds' }) });
   assert.equal(changesSince(mark), 'Mayer closed 3, dropped 1, snoozed 1; UI edited 1 (see events).', 'a re-snooze is a snooze');
 
-  endRun(startRun('digest'), true, {}); // the last digest ran now: the next one only reports what follows
+  // The last digest ran just after all that, so the next one reports only what follows. Reopening and closing a
+  // snoozed item clears its snooze date: that's a reopen and a close, not a snooze.
+  const run = startRun('digest');
+  endRun(run, true, {});
+  const lastAt = db.prepare('SELECT MAX(at) AS at FROM events').get().at;
+  db.prepare('UPDATE runs SET started_at=? WHERE id=?').run(new Date(Date.parse(lastAt) + 1).toISOString(), run);
   await new Promise((r) => setTimeout(r, 5));
   await post(`/api/items/${codeOf('Recycle the flyers')}`, mayer, { status: 'open' });
+  await read(await newPage(), '2026-10-18', [item('Count the flyers'), item('Box the flyers')]);
+  for (const t of ['Count the flyers', 'Box the flyers']) await post(`/api/items/${codeOf(t)}`, mayer, { status: 'snoozed', until: '2999-01-01' });
+  const d0 = db.prepare('SELECT MAX(at) AS at FROM events').get().at;
+  await new Promise((r) => setTimeout(r, 5));
+  await post(`/api/items/${codeOf('Count the flyers')}`, mayer, { status: 'open' });
+  await post(`/api/items/${codeOf('Box the flyers')}`, mayer, { status: 'done' });
+  assert.equal(changesSince(new Date(Date.parse(d0) + 1).toISOString()), 'Mayer closed 1, reopened 1 (see events).');
   const d = await morningDigest({ push: false });
-  assert.match(d.md, /^Mayer reopened 1 \(see events\)\.$/m);
+  assert.match(d.md, /^Mayer closed 1, snoozed 2, reopened 2 \(see events\)\.$/m);
 });
 
 test('prompt injection: an item that reads as an instruction is stored, served and shown as text, and does nothing', async () => {

@@ -181,7 +181,7 @@ test('HTTP API: token, items, status changes, notes', { skip }, async (t) => {
   assert.equal(status.busy, null);
   assert.ok(status.runs.length > 0);
 
-  assert.equal((await get('/ui/api/items', {})).status, 200, 'UI mount relies on the Umbrel proxy for auth');
+  assert.equal((await get('/ui-api/items', {})).status, 200, 'UI mount relies on the Umbrel proxy for auth');
   assert.match(await (await get('/', {})).text(), /<title>Gleaner<\/title>/);
 });
 

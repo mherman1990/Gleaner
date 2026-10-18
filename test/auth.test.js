@@ -5,7 +5,7 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { tempEnv } from './helpers.js';
 
@@ -68,11 +68,25 @@ test('scopes gate each route: 403 without one, 401 for an unknown token', async 
   assert.equal((await call('/api/items', null, { headers: { Authorization: `Basic ${reader}` } })).status, 401);
 });
 
-test('the legacy env token still works, as client "legacy" with every scope', async () => {
+test('the legacy env token still works, as client "legacy" with every scope, even with a space in it', async () => {
   const res = await post('/api/items/1', 'legacy-secret', { status: 'done' });
   assert.equal(res.status, 200);
   assert.equal((await res.json()).closed_by, 'legacy');
   assert.equal((await post('/api/items/1', 'legacy-secret', { status: 'open' })).status, 200);
+  const legacy = config.server.apiToken;
+  config.server.apiToken = 'correct horse battery staple'; // v0.1 compared the whole header, so this worked
+  try {
+    assert.equal((await call('/api/items', null, { headers: { Authorization: 'Bearer correct horse battery staple' } })).status, 200);
+    assert.equal((await call('/api/items', null, { headers: { Authorization: 'bearer  correct horse battery staple ' } })).status, 200);
+    assert.equal((await call('/api/items', null, { headers: { Authorization: 'Bearer correct horse' } })).status, 401);
+  } finally { config.server.apiToken = legacy; }
+});
+
+test('the UI mount can\'t be reached as /<anything>/api/…, which Umbrel\'s /api/* whitelist would let through', async () => {
+  const { router } = await import('../src/server.js');
+  assert.deepEqual(router().stack.filter((l) => l.route?.path.startsWith('/api')).map((l) => l.route.path), []);
+  assert.equal((await fetch(`${base}/ui-api/api/items`)).status, 404, 'what //ui-api/api/items arrives as');
+  assert.equal((await fetch(`${base}/ui/api/items`)).status, 404, 'the old mount is gone');
 });
 
 test('a token added or revoked by another process takes effect without a restart', async () => {
@@ -92,6 +106,44 @@ test('a token added or revoked by another process takes effect without a restart
   assert.match(run('revoke', 'mcp').stdout, /has no token/);
 });
 
+test('two token commands at once both take effect', async () => {
+  const cli = (...args) => new Promise((resolve) => {
+    const child = spawn(process.execPath, [path.join(ROOT, 'src', 'cli.js'), 'token', ...args], { env: { ...process.env, GLEANER_DATA_DIR: dataDir } });
+    let out = '';
+    child.stdout.on('data', (d) => (out += d));
+    child.on('close', (status) => resolve({ status, out }));
+  });
+  for (let i = 0; i < 6; i++) {
+    auth.addToken(`gone-${i}`, { scopes: 'read' });
+    const [revoked, added] = await Promise.all([cli('revoke', `gone-${i}`), cli('add', `new-${i}`, '--scopes', 'read', '--sensitivity', 'all')]);
+    assert.match(revoked.out, /revoked/);
+    const clients = auth.tokenStatus().clients.map((c) => c.client);
+    assert.ok(!clients.includes(`gone-${i}`) && clients.includes(`new-${i}`), `round ${i}: ${clients.join(', ')}`);
+    assert.equal((await call('/api/items', added.out.match(/gl_\S+/)[0])).status, 200);
+  }
+});
+
+test('a token command waits for another one\'s lock, and clears a lock left by one that died', async () => {
+  const lock = `${tokensFile}.lock`;
+  fs.writeFileSync(lock, '');
+  const started = Date.now();
+  let released = 0;
+  setTimeout(() => { released = Date.now(); fs.rmSync(lock, { force: true }); }, 400);
+  const run = await new Promise((resolve) => {
+    const child = spawn(process.execPath, [path.join(ROOT, 'src', 'cli.js'), 'token', 'add', 'waiter', '--scopes', 'read'],
+      { env: { ...process.env, GLEANER_DATA_DIR: dataDir } });
+    child.on('close', (status) => resolve({ status, at: Date.now() }));
+  });
+  assert.equal(run.status, 0);
+  assert.ok(released && run.at >= released && released - started >= 400, 'it waited for the lock to go');
+  assert.ok(auth.tokenStatus().clients.some((c) => c.client === 'waiter'));
+  fs.writeFileSync(lock, '');
+  fs.utimesSync(lock, new Date(Date.now() - 60e3), new Date(Date.now() - 60e3));
+  auth.addToken('after-stale-lock', { scopes: 'read' });
+  assert.ok(auth.tokenStatus().clients.some((c) => c.client === 'after-stale-lock'));
+  assert.equal(fs.existsSync(lock), false);
+});
+
 test('a damaged tokens.json shuts its tokens out (closed), and can\'t be overwritten by mistake', async () => {
   const reader = auth.addToken('second-reader', { scopes: 'read', sensitivity: 'all' });
   const good = fs.readFileSync(tokensFile, 'utf8');
@@ -101,6 +153,10 @@ test('a damaged tokens.json shuts its tokens out (closed), and can\'t be overwri
     assert.match(auth.tokenStatus().error, /malformed/);
     assert.throws(() => auth.addToken('third', { scopes: 'read' }), /can't be read/);
     assert.equal((await call('/api/items', 'legacy-secret')).status, 200, 'the legacy token is separate');
+    // A hand-edited entry can't take a name Gleaner writes itself (its changes would pass as the tablet's).
+    fs.writeFileSync(tokensFile, good.replace('"client": "second-reader"', '"client": "handwriting"'));
+    assert.equal((await call('/api/items', reader)).status, 401);
+    assert.match(auth.tokenStatus().error, /malformed/);
   } finally { fs.writeFileSync(tokensFile, good); }
   assert.equal((await call('/api/items', reader)).status, 200);
 });
@@ -112,6 +168,6 @@ test('with no tokens at all, /api is closed (503), not open', async () => {
   config.server.apiToken = '';
   try {
     assert.equal((await call('/api/items', 'anything')).status, 503);
-    assert.equal((await fetch(`${base}/ui/api/items`)).status, 200, 'the UI, behind Umbrel\'s login, still works');
+    assert.equal((await fetch(`${base}/ui-api/items`)).status, 200, 'the UI, behind Umbrel\'s login, still works');
   } finally { fs.writeFileSync(tokensFile, good, { mode: 0o600 }); config.server.apiToken = legacy; }
 });

@@ -65,7 +65,11 @@ export function recordEvent(client, code, field, old, value) {
     .run(now(), client, code, field, asText(old), asText(value));
 }
 
-/** Run write(), which changes item `id`, and record each field it changed as an event by `client`. Atomic. */
+/**
+ * Run write(), which changes item `id`, and record each field it changed as an event by `client`. Atomic, and it
+ * takes the write lock before reading (immediate), so another process writing meanwhile (a `docker exec … cli.js`)
+ * is waited for instead of failing the write with SQLITE_BUSY.
+ */
 export function changeItem(id, client, write) {
   if (!client) throw new Error('an item change needs a client to attribute it to');
   return db.transaction(() => {
@@ -76,7 +80,7 @@ export function changeItem(id, client, write) {
       for (const f of EVENT_FIELDS) if (asText(before[f]) !== asText(after[f])) recordEvent(client, after.code, f, before[f], after[f]);
     }
     return out;
-  })();
+  }).immediate();
 }
 
 /**

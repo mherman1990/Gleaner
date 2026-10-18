@@ -108,7 +108,7 @@ sudo docker exec herman-gleaner_web_1 node src/cli.js token add mayer --scopes a
 It prints the token once; `/data/tokens.json` keeps only its sha256 hash (mode 0600). `token list` shows the clients
 and `token revoke <client>` removes one; both take effect without a restart. `GLEANER_API_TOKEN` still works through
 v0.2.x, as client `legacy` with every scope. With no token at all, `/api` is disabled (503). The browser UI uses
-`/ui/api`, behind Umbrel's login, as client `ui`.
+`/ui-api`, behind Umbrel's login, as client `ui`.
 
 | Scope | Routes |
 |---|---|
@@ -127,7 +127,8 @@ registry loaded nothing can be judged, so these tokens get 503 until one is.
 **Audit trail.** Every change to an item writes a row per changed field to `events`: who (`handwriting`, `erased`,
 `ui`, `cli`, `legacy`, or the token's client), the item, the field, and the old and new values. `closed_by` is the
 client too. `GET /api/events?since=today|YYYY-MM-DD|<ISO time>&client=mayer` lists them, oldest first (default: the
-last 24 hours; at most 1,000). The morning digest says what people and clients changed since the last digest, e.g.
+last 24 hours). It returns at most 1,000; the header `X-More: true` means there are more, so ask again with
+`&after=<the last event's id>`. The morning digest says what people and clients changed since the last digest, e.g.
 "Mayer closed 3, dropped 1 (see events)."
 
 Items carry `tags`, `unregistered_tags` (tags the registry doesn't cover) and `person_ambiguous` (the person or

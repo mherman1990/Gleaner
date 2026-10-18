@@ -36,7 +36,7 @@ Read README.md for setup and docs/HANDWRITING.md for the notation the extractor 
 - **API clients, sensitivity, audit trail** (v0.2 step 2):
   - `src/auth.js`: per-client tokens in `/data/tokens.json`, sha256 hashes only (mode 0600, re-read when it changes),
     each with scopes (`read`, `write`, `create`, `ingest`, `digest`) and a sensitivity (`all` or `normal`). CLI
-    `token add|revoke|list`. `GLEANER_API_TOKEN` is client `legacy` through v0.2.x; `/ui/api` is client `ui`.
+    `token add|revoke|list`. `GLEANER_API_TOKEN` is client `legacy` through v0.2.x; `/ui-api` is client `ui`.
   - `src/sensitivity.js`: every route that returns content asks `visibility()`. At `normal`, an item tagged with a
     restricted project (aliases count) or mentioned on a page that is, and that page, are left out of everything;
     with no registry it's a 503. `test/sensitivity.test.js` sweeps every GET route; a new route needs a probe there.

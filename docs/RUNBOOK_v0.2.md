@@ -68,8 +68,8 @@ After upgrading to the release with step 2. Each client gets its own token: who 
    ```
 2. **Check them:** `sudo docker exec herman-gleaner_web_1 node src/cli.js token list` shows the four clients, with no
    tokens or hashes. `doctor` shows the same under `tokens`.
-3. **Check the filter** (needs your registry from step 1). From a computer on your network or Tailscale, with the
-   `cowork-notebook` token:
+3. **Check the filter** (needs your registry from step 1). From a computer on your home network, with the
+   `cowork-notebook` token (away from home, over Tailscale, use the Pi's MagicDNS name instead of `umbrel.local`):
    ```
    curl -s -H "Authorization: Bearer <cowork-notebook token>" "http://umbrel.local:3717/api/items?status=all"
    ```

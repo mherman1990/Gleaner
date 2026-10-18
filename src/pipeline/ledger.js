@@ -43,13 +43,16 @@ function normalize(it, r = currentRegistry()) {
 }
 
 function insertItem(it, pageId, pageDate) {
-  const id = newId('it'), code = nextCode();
+  const id = newId('it');
   const { due, due_time } = dueOf(it, pageDate);
-  db.prepare(`INSERT INTO items (id, code, text, kind, person, assignee, due, due_time, priority, tags, status,
-    first_page_id, last_page_id, first_seen, last_seen) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
-    id, code, it.text.trim(), VALID.has(it.kind) ? it.kind : 'action', it.person || null, it.assignee || null,
-    due, due_time, it.priority ? 1 : 0, J(it.tags), 'open', pageId, pageId, pageDate, pageDate);
-  recordEvent('handwriting', code, 'created', null, it.text.trim());
+  db.transaction(() => { // the number, the row and its "created" event together
+    const code = nextCode();
+    db.prepare(`INSERT INTO items (id, code, text, kind, person, assignee, due, due_time, priority, tags, status,
+      first_page_id, last_page_id, first_seen, last_seen) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      id, code, it.text.trim(), VALID.has(it.kind) ? it.kind : 'action', it.person || null, it.assignee || null,
+      due, due_time, it.priority ? 1 : 0, J(it.tags), 'open', pageId, pageId, pageDate, pageDate);
+    recordEvent('handwriting', code, 'created', null, it.text.trim());
+  }).immediate();
   if (it.status === 'done' || it.status === 'dropped') setItemStatus(id, it.status, 'handwriting', 'marked on source page');
   mention(id, pageId, pageDate);
   return id;

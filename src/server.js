@@ -4,7 +4,10 @@
 //                client with sensitivity "normal" gets every response with restricted work left out
 //                (src/sensitivity.js). Disabled while there's no token. Whitelisted past Umbrel's proxy auth in
 //                umbrel-store/herman-gleaner/docker-compose.yml.
-//   /ui/api/*  — for the browser UI, behind Umbrel's own login via app_proxy: client "ui", every scope, all work.
+//   /ui-api/*  — for the browser UI, behind Umbrel's own login via app_proxy: client "ui", every scope, all work.
+//                Not /ui/api: Umbrel checks its "/api/*" whitelist on the URL-parsed path, where //ui/api/items reads
+//                as host "ui", path /api/items, and then forwards the raw path, so that mount was reachable with no
+//                login. No route in router() starts with /api, so //ui-api/api/… finds nothing either.
 // Changes are attributed to the client (closed_by, and the events table).
 import express from 'express';
 import fs from 'node:fs';
@@ -23,8 +26,10 @@ import { listEvents, parseSince } from './events.js';
 
 const PUBLIC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../public');
 // unregistered_tags and person_ambiguous are worked out against the current registry, so they follow its edits.
-const itemJson = (i) => ({ ...i, tags: P(i.tags), edited: P(i.edited), person_ambiguous: personAmbiguous(i),
-  unregistered_tags: unregisteredTags(P(i.tags)) });
+// A close by number can be written on any page, restricted ones included, and close_evidence holds that page's words,
+// so at sensitivity normal a handwriting close keeps its status but not its evidence.
+const itemJson = (i, vis) => ({ ...i, tags: P(i.tags), edited: P(i.edited), person_ambiguous: personAmbiguous(i),
+  unregistered_tags: unregisteredTags(P(i.tags)), ...(!vis.all && i.closed_by === 'handwriting' ? { close_evidence: null } : {}) });
 
 /** The routes, for both mounts. Each request arrives with req.client = { client, scopes, sensitivity }. */
 export function router() {
@@ -55,14 +60,14 @@ export function router() {
       const want = tagKey(canonicalTag(req.query.tag)?.tag);
       rows = rows.filter((i) => canonicalTags(P(i.tags)).some((t) => tagKey(t) === want));
     }
-    res.json(rows.filter(vis.item).map(itemJson));
+    res.json(rows.filter(vis.item).map((i) => itemJson(i, vis)));
   });
 
   r.get('/items/:code', can('read'), (req, res) => {
     const vis = view(req, res);
     if (!vis) return;
     const item = itemByCode(req.params.code, vis);
-    item ? res.json(itemJson(item)) : res.status(404).json({ error: 'no such item' });
+    item ? res.json(itemJson(item, vis)) : res.status(404).json({ error: 'no such item' });
   });
 
   // By the printed number. Close, reopen, or snooze: {"status":"done"} | {"status":"open"} | {"status":"snoozed","until":"2026-10-23"}.
@@ -81,7 +86,7 @@ export function router() {
     try { editItem(item.id, edits, req.client.client); } catch (e) { return res.status(400).json({ error: e.message }); }
     if (status !== undefined) setItemStatus(item.id, status, req.client.client, note || null, status === 'snoozed' ? until : null);
     refreshItemOutputs([item.id]);
-    res.json(itemJson(db.prepare('SELECT * FROM items WHERE id=?').get(item.id)));
+    res.json(itemJson(db.prepare('SELECT * FROM items WHERE id=?').get(item.id), vis));
   });
 
   r.get('/open-loops.md', can('read'), (req, res) => {
@@ -141,12 +146,18 @@ export function router() {
       .map(({ page_date, name, page_index, summary }) => ({ page_date, name, page_index, summary })));
   });
 
-  // ?since=today | YYYY-MM-DD | ISO time (default: the last 24 hours) &client=mayer
+  // ?since=today | YYYY-MM-DD | ISO time (default: the last 24 hours) &client=mayer &after=<event id>
+  // At most 1,000 events, oldest first. X-More: true means there are more: ask again with after=<the last id>.
   r.get('/events', can('read'), (req, res) => {
     const since = parseSince(req.query.since);
     if (!since) return res.status(400).json({ error: 'since must be "today", YYYY-MM-DD, or an ISO time' });
+    const { client, after } = req.query;
+    if (client !== undefined && typeof client !== 'string') return res.status(400).json({ error: 'give one client' });
+    if (after !== undefined && !/^\d+$/.test(after)) return res.status(400).json({ error: 'after must be an event id' });
     const vis = view(req, res);
-    if (vis) res.json(listEvents({ since, client: req.query.client }, vis));
+    if (!vis) return;
+    const { events, more } = listEvents({ since, client, after: Number(after ?? 0) }, vis);
+    res.set('X-More', String(more)).json(events);
   });
 
   r.post('/ingest', can('ingest'), (req, res) => {
@@ -194,7 +205,7 @@ export function startServer() {
   const app = express();
   app.get('/health', (_req, res) => res.json({ ok: true }));
   app.use('/api', apiAuth, router());
-  app.use('/ui/api', (req, _res, next) => { req.client = UI_CLIENT; next(); }, router());
+  app.use('/ui-api', (req, _res, next) => { req.client = UI_CLIENT; next(); }, router());
   app.use(express.static(PUBLIC));
   const server = app.listen(config.server.port, () => console.log(`[server] listening on :${server.address().port}`));
   if (!apiEnabled()) console.warn('[server] no API tokens — /api is disabled; the browser UI still works');

@@ -1,5 +1,5 @@
 // Reading the audit trail (spec §1.3). Writing it is changeItem() / recordEvent() in db.js.
-import { db } from './db.js';
+import { db, isDate } from './db.js';
 import { config } from './config.js';
 
 // Gleaner's own attributions for what was written on the tablet; everything else is a person or a client acting.
@@ -21,23 +21,26 @@ export function parseSince(since, at = new Date()) {
   if (since === undefined || since === '') return new Date(at.getTime() - 24 * 3600e3).toISOString();
   const s = String(since).trim();
   if (s === 'today') return localMidnight(new Intl.DateTimeFormat('en-CA', { timeZone: config.timezone }).format(at)).toISOString();
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return Number.isNaN(Date.parse(`${s}T00:00:00Z`)) ? null : localMidnight(s).toISOString();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return isDate(s) ? localMidnight(s).toISOString() : null;
   if (!/^\d{4}-\d{2}-\d{2}T/.test(s) || Number.isNaN(Date.parse(s))) return null;
   return new Date(s).toISOString();
 }
 
 /**
- * Events since an ISO time, oldest first, at most `limit`; optionally one client's. `vis` (src/sensitivity.js) drops
+ * Events since an ISO time and after an event id, oldest first, at most `limit`; optionally one client's. Returns
+ * { events, more }: when more is true, ask again with after = the last event's id. `vis` (src/sensitivity.js) drops
  * events of items the client may not see, and every event of an item whose tags ever included a restricted project,
  * so a tag change can't reveal one.
  */
-export function listEvents({ since, client, limit = 1000 }, vis) {
-  const rows = db.prepare(`SELECT id, at, client, item_code, field, old, new FROM events WHERE at >= ?
-    ${client ? 'AND client = ?' : ''} ORDER BY id`).all(...[since, client].filter((v) => v !== undefined && v !== null && v !== ''));
-  if (vis.all) return rows.slice(0, limit);
-  const everRestricted = new Set(db.prepare(`SELECT item_code, old, new FROM events WHERE field='tags'`).all()
-    .filter((e) => vis.restrictedTags(e.old) || vis.restrictedTags(e.new)).map((e) => e.item_code));
-  return rows.filter((e) => e.item_code !== null && vis.code(e.item_code) && !everRestricted.has(e.item_code)).slice(0, limit);
+export function listEvents({ since, client, after = 0, limit = 1000 }, vis) {
+  let rows = db.prepare(`SELECT id, at, client, item_code, field, old, new FROM events WHERE at >= ? AND id > ?
+    ${client ? 'AND client = ?' : ''} ORDER BY id`).all(...[since, after, client].filter((v) => v !== undefined && v !== null && v !== ''));
+  if (!vis.all) {
+    const everRestricted = new Set(db.prepare(`SELECT item_code, old, new FROM events WHERE field='tags'`).all()
+      .filter((e) => vis.restrictedTags(e.old) || vis.restrictedTags(e.new)).map((e) => e.item_code));
+    rows = rows.filter((e) => e.item_code !== null && vis.code(e.item_code) && !everRestricted.has(e.item_code));
+  }
+  return { events: rows.slice(0, limit), more: rows.length > limit };
 }
 
 const ACTION = { done: 'closed', dropped: 'dropped', snoozed: 'snoozed', open: 'reopened' };
@@ -54,8 +57,9 @@ export function changesSince(since) {
   if (!rows.length) return null;
   const by = new Map(); // client -> action -> Set of item codes
   for (const e of rows) {
-    // A snooze to a new date is still a snooze, not an edit.
-    const action = e.field === 'status' ? ACTION[e.new] : e.field === 'snooze_until' ? 'snoozed' : e.field === 'created' ? 'created' : 'edited';
+    // A snooze to a new date is still a snooze, not an edit; the date cleared by a close or reopen is neither.
+    const action = e.field === 'status' ? ACTION[e.new] : e.field === 'snooze_until' ? (e.new ? 'snoozed' : null)
+      : e.field === 'created' ? 'created' : 'edited';
     if (!action) continue;
     const acts = by.get(e.client) ?? new Map();
     acts.set(action, (acts.get(action) ?? new Set()).add(e.item_code));
