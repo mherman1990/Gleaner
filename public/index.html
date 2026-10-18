@@ -106,10 +106,61 @@ async function load() {
   $('closedN').textContent = `(${closed.length})`;
   const names = [...new Set([...byCode.values()].flatMap((i) => [i.assignee, i.person]).filter(Boolean))].sort();
   $('people').innerHTML = names.map((n) => `<option value="${esc(n)}">`).join('');
-  const last = status.runs?.[0];
-  $('status').textContent = `${open.length} open · last run: ${last ? `${last.kind} ${last.ok ? 'ok' : 'FAILED'} ${new Date(last.started_at).toLocaleString()}` : 'none'}${status.busy ? ` · running ${status.busy}` : ''}`;
+  $('status').textContent = `${open.length} open · last read: ${describeRun(lastRead(status.runs))}` +
+    `${status.busy && status.busy !== lastRead(status.runs)?.kind ? ` · running ${status.busy}` : ''}`;
+  if (status.busy === 'ingest:sync') watchRead(); // started by the scheduler or another tab
   const d = await fetch(`${API}/digest/today`);
   $('today').textContent = d.ok ? await d.text() : 'No digest yet today.';
+}
+
+const lastRead = (runs = []) => runs.find((r) => r.kind.startsWith('ingest'));
+
+/** A finished run's summary ({pages, created, …}). /status cuts details to 300 characters, so this can be null. */
+const runDetail = (run) => { try { return JSON.parse(run.detail); } catch { return null; } };
+
+/** One line about a read from /status. */
+function describeRun(run) {
+  if (!run) return 'none yet';
+  const when = new Date(run.started_at).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' });
+  if (!run.ended_at) return `running since ${when}`;
+  if (!run.ok) return `FAILED ${when}: ${String(run.detail || '').split('\n')[0]}`;
+  const d = runDetail(run);
+  return `${when} — ${d ? pagesRead(d) : 'ok'} (${took(run)})`;
+}
+
+const took = (run) => { const s = Math.round((Date.parse(run.ended_at) - Date.parse(run.started_at)) / 1000); return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`; };
+
+const pagesRead = (d) => (!d.pages ? 'no changed pages'
+  : `${d.pages} page${d.pages === 1 ? '' : 's'}: ${d.created} new, ${d.carried} carried, ${d.closed} closed${d.failed ? `, ${d.failed} FAILED` : ''}`);
+
+/** Wait for a sync read to finish (on the Pi, a minute or more per changed page), then say what it found. */
+let watching = false;
+async function watchRead(note) {
+  if (watching) return;
+  watching = true;
+  const b = $('ingest');
+  b.disabled = true;
+  b.textContent = 'Reading…';
+  if (note) toast(note);
+  let s = null;
+  try {
+    const until = Date.now() + 20 * 60000;
+    do {
+      await new Promise((r) => setTimeout(r, 2000));
+      s = await fetch(`${API}/status`).then((r) => r.json());
+    } while (s.busy === 'ingest:sync' && Date.now() < until);
+    const run = lastRead(s.runs), d = run?.ok ? runDetail(run) : null;
+    toast(s.busy === 'ingest:sync' ? 'Still reading after 20 minutes; check back later.'
+      : d?.pages === 0 ? 'Nothing new: no page in /Daily changed since the last read. If you just wrote, let the tablet sync and try again.'
+      : d ? `Done in ${took(run)}. ${pagesRead(d)}` : `Last read: ${describeRun(run)}`);
+  } catch (err) {
+    toast(`Couldn't check on the read: ${err.message}`);
+  } finally {
+    watching = false;
+    b.disabled = false;
+    b.textContent = 'Ingest now';
+    if (s?.busy !== 'ingest:sync') load();
+  }
 }
 
 function toast(msg, undoFn) {
@@ -170,7 +221,18 @@ document.addEventListener('submit', async (e) => {
 });
 
 $('undo').onclick = async () => { const fn = undo; $('toast').hidden = true; undo = null; if (fn) { await fn().catch((err) => toast(err.message)); load(); } };
-$('ingest').onclick = async () => { await fetch(`${API}/ingest`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"mode":"sync"}' }); setTimeout(load, 1500); };
+$('ingest').onclick = async () => {
+  const b = $('ingest');
+  b.disabled = true;
+  try {
+    const r = await fetch(`${API}/ingest`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"mode":"sync"}' });
+    if (r.status === 202) return watchRead('Reading your notebooks…');
+    const err = (await r.json().catch(() => ({}))).error || `HTTP ${r.status}`;
+    if (err.includes('ingest:sync')) return watchRead('A read is already running…');
+    toast(err.includes('ingest:batch') ? 'The nightly read is still running (it can take a while). Try again later.' : `Couldn't start a read: ${err}`);
+  } catch (err) { toast(`Couldn't start a read: ${err.message}`); }
+  b.disabled = watching;
+};
 $('digest').onclick = async () => { $('today').textContent = 'Building…'; await fetch(`${API}/digest`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); load(); };
 load();
 </script>
