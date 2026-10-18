@@ -33,6 +33,16 @@ Read README.md for setup and docs/HANDWRITING.md for the notation the extractor 
     transcription prompt and reloads when the file changes (stat incl. ctime). Every valid version is saved as
     `.projects.yaml.last-good`, which a broken file falls back to in any process; unknown keys only warn.
     **Never commit Matt's `projects.yaml`:** this repo is public and the file names colleagues and restricted work.
+- **API clients, sensitivity, audit trail** (v0.2 step 2):
+  - `src/auth.js`: per-client tokens in `/data/tokens.json`, sha256 hashes only (mode 0600, re-read when it changes),
+    each with scopes (`read`, `write`, `create`, `ingest`, `digest`) and a sensitivity (`all` or `normal`). CLI
+    `token add|revoke|list`. `GLEANER_API_TOKEN` is client `legacy` through v0.2.x; `/ui/api` is client `ui`.
+  - `src/sensitivity.js`: every route that returns content asks `visibility()`. At `normal`, an item tagged with a
+    restricted project (aliases count) or mentioned on a page that is, and that page, are left out of everything;
+    with no registry it's a 503. `test/sensitivity.test.js` sweeps every GET route; a new route needs a probe there.
+  - Every item write goes through `changeItem()` / `recordEvent()` in `src/db.js`, which write the `events` rows
+    with the client; `editItem()` and `setItemStatus()` require one. `src/events.js` reads them (`/api/events`, the
+    digest's "Mayer closed 3" line). A new mutating route needs an events test (`test/events.test.js` checks).
 - **Schema changes are numbered migrations** in `src/migrations/` (runner in `index.js`, recorded in
   `schema_migrations`). They only add things; never edit one that has shipped. `001-baseline-v0.1.4` is the schema
   from before the runner. `test/migrate.test.js` runs every migration against `test/fixtures/v0.1.4.sql`.
@@ -56,7 +66,7 @@ Read README.md for setup and docs/HANDWRITING.md for the notation the extractor 
   and `umbrel-app-store.yml` belong to the spotter repo; never sync them from here. Spotter's release runs
   `check-store.mjs` over every app folder, so `herman-gleaner/` must keep passing it (`test/store.test.js` enforces this;
   `scripts/check-store.mjs` is a verbatim copy of Spotter's). `/api/*` skips Umbrel login, so it stays disabled
-  without `GLEANER_API_TOKEN`.
+  without a token (`/data/tokens.json`, or the legacy `GLEANER_API_TOKEN`).
 - **v0.2 work follows `docs/IMPLEMENTATION_PLAN.md`** (one PR per spec step, each with its acceptance test). Steps
   that need Matt's hands (tokens, keys, Telegram/Signal, OpenClaw, Tailscale, Cowork) go in `docs/RUNBOOK_v0.2.md`.
 - Tests: `npm test` (node:test, mock LLM, temp data dirs). Tests that need the real request shape point the SDK at

@@ -3,7 +3,8 @@
 //  2. Number-based closes ("✓14") update earlier items.
 //  3. Genuinely new items are checked against all open loops (Haiku) — a match means he rewrote/carried it,
 //     which bumps carry_days instead of creating a duplicate. carry_days is the "you keep carrying this" signal.
-import { db, newId, nextCode, J, P, setItemStatus, openItems } from '../db.js';
+// Every change here is an event by "handwriting" (an item erased from its page: "erased"); see changeItem() in db.js.
+import { db, newId, nextCode, J, P, setItemStatus, openItems, changeItem, recordEvent } from '../db.js';
 import { config, normTime } from '../config.js';
 import { currentRegistry, canonicalTags, resolvePerson, isFirstNameOf } from '../registry.js';
 import { callStructured, structuredParams } from '../llm/client.js';
@@ -21,8 +22,8 @@ function mention(itemId, pageId, pageDate) {
   db.prepare(`INSERT INTO item_mentions (item_id, page_id, page_date) VALUES (?,?,?)
     ON CONFLICT(item_id, page_id) DO UPDATE SET page_date=excluded.page_date`).run(itemId, pageId, pageDate);
   const days = db.prepare('SELECT COUNT(DISTINCT page_date) AS n FROM item_mentions WHERE item_id=?').get(itemId).n;
-  db.prepare(`UPDATE items SET carry_days=?, last_page_id=?, last_seen=MAX(COALESCE(last_seen,''), ?) WHERE id=?`)
-    .run(Math.max(1, days), pageId, pageDate, itemId);
+  changeItem(itemId, 'handwriting', () => db.prepare(`UPDATE items SET carry_days=?, last_page_id=?, last_seen=MAX(COALESCE(last_seen,''), ?) WHERE id=?`)
+    .run(Math.max(1, days), pageId, pageDate, itemId));
 }
 
 /** The due date and time the model read. A time with no date written means the page date. */
@@ -42,12 +43,13 @@ function normalize(it, r = currentRegistry()) {
 }
 
 function insertItem(it, pageId, pageDate) {
-  const id = newId('it');
+  const id = newId('it'), code = nextCode();
   const { due, due_time } = dueOf(it, pageDate);
   db.prepare(`INSERT INTO items (id, code, text, kind, person, assignee, due, due_time, priority, tags, status,
     first_page_id, last_page_id, first_seen, last_seen) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
-    id, nextCode(), it.text.trim(), VALID.has(it.kind) ? it.kind : 'action', it.person || null, it.assignee || null,
+    id, code, it.text.trim(), VALID.has(it.kind) ? it.kind : 'action', it.person || null, it.assignee || null,
     due, due_time, it.priority ? 1 : 0, J(it.tags), 'open', pageId, pageId, pageDate, pageDate);
+  recordEvent('handwriting', code, 'created', null, it.text.trim());
   if (it.status === 'done' || it.status === 'dropped') setItemStatus(id, it.status, 'handwriting', 'marked on source page');
   mention(id, pageId, pageDate);
   return id;
@@ -66,7 +68,7 @@ function refreshItem(id, it, pageDate, r) {
     if (hand.has(field) || !it[field]) return cur[field];
     return isFirstNameOf(it[field], cur[field], r) ? resolvePerson(cur[field], r).name : it[field];
   };
-  db.prepare(`UPDATE items SET text=@text, person=@person, assignee=@assignee,
+  changeItem(id, 'handwriting', () => db.prepare(`UPDATE items SET text=@text, person=@person, assignee=@assignee,
     due=@due, due_time=@due_time, priority=@priority, tags=@tags WHERE id=@id`).run({
     id,
     text: hand.has('text') ? cur.text : it.text.trim(),
@@ -76,7 +78,7 @@ function refreshItem(id, it, pageDate, r) {
     due_time: keepDue ? cur.due_time : read.due_time,
     priority: Math.max(cur.priority, it.priority ? 1 : 0),
     tags: J(it.tags),
-  });
+  }));
   if ((it.status === 'done' || it.status === 'dropped') && cur.status !== it.status) setItemStatus(id, it.status, 'handwriting', 'checked on page');
 }
 

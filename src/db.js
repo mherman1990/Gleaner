@@ -52,10 +52,44 @@ export function nextCode() {
   return (db.prepare('SELECT MAX(code) AS m FROM items').get().m || 0) + 1;
 }
 
+// The audit trail. Every write to an item goes through changeItem(), which records one events row per field below
+// that changed, attributed to `client` (handwriting, erased, ui, cli, legacy, or an API token's client). Bookkeeping
+// columns (last_seen, last_nudged, edited, closed_at, …) aren't events: the status change carries the close.
+const EVENT_FIELDS = ['status', 'snooze_until', 'text', 'kind', 'person', 'assignee', 'due', 'due_time', 'priority', 'tags', 'carry_days'];
+const asText = (v) => (v === null || v === undefined ? null : String(v));
+
+/** One events row. For a change changeItem() can't see, such as an item's creation (field "created"). */
+export function recordEvent(client, code, field, old, value) {
+  if (!client) throw new Error('an item change needs a client to attribute it to');
+  db.prepare('INSERT INTO events (at, client, item_code, field, old, new) VALUES (?,?,?,?,?,?)')
+    .run(now(), client, code, field, asText(old), asText(value));
+}
+
+/** Run write(), which changes item `id`, and record each field it changed as an event by `client`. Atomic. */
+export function changeItem(id, client, write) {
+  if (!client) throw new Error('an item change needs a client to attribute it to');
+  return db.transaction(() => {
+    const before = db.prepare('SELECT * FROM items WHERE id=?').get(id);
+    const out = write();
+    const after = db.prepare('SELECT * FROM items WHERE id=?').get(id);
+    if (before && after) {
+      for (const f of EVENT_FIELDS) if (asText(before[f]) !== asText(after[f])) recordEvent(client, after.code, f, before[f], after[f]);
+    }
+    return out;
+  })();
+}
+
+/**
+ * Close, drop, snooze or reopen an item. `by` is the client (closed_by, and the events' client). Setting the status
+ * an item already has changes nothing (a second "done" keeps the first close's time and client), except a snooze to a
+ * new date. Returns the number of rows changed.
+ */
 export function setItemStatus(id, status, by, evidence = null, snoozeUntil = null) {
+  const cur = db.prepare('SELECT status, snooze_until FROM items WHERE id=?').get(id);
+  if (!cur || (cur.status === status && (status !== 'snoozed' || cur.snooze_until === snoozeUntil))) return 0;
   const closing = status === 'done' || status === 'dropped';
-  return db.prepare(`UPDATE items SET status=?, snooze_until=?, closed_at=?, closed_by=?, close_evidence=? WHERE id=?`)
-    .run(status, snoozeUntil, closing ? now() : null, closing ? by : null, closing ? evidence : null, id).changes;
+  return changeItem(id, by, () => db.prepare(`UPDATE items SET status=?, snooze_until=?, closed_at=?, closed_by=?, close_evidence=? WHERE id=?`)
+    .run(status, status === 'snoozed' ? snoozeUntil : null, closing ? now() : null, closing ? by : null, closing ? evidence : null, id).changes);
 }
 
 export const EDITABLE = ['text', 'due', 'due_time', 'person', 'assignee'];
@@ -64,13 +98,15 @@ export const isDate = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s || '') && !Number.isNa
 const blank = (v) => v === null || v === undefined || String(v).trim() === '';
 
 /**
- * A hand edit from the UI, API, or CLI. changes holds any of: text; due (YYYY-MM-DD, or null to clear it and its
- * time); due_time ("14:00", "2pm", or null; with no due date it means today); person (the counterpart, or null);
- * assignee (a name, or null for Matt). Names go through the registry like transcribed ones ("Pat" → "Pat Example").
- * Each field that changes is recorded in items.edited, so re-transcribing the page never overwrites it. A new due
- * date or time resets the nudge count. Throws on invalid input. Returns the fields that changed.
+ * A hand edit from the UI, API, or CLI, by `by` (the client: ui, cli, or the token's). changes holds any of: text;
+ * due (YYYY-MM-DD, or null to clear it and its time); due_time ("14:00", "2pm", or null; with no due date it means
+ * today); person (the counterpart, or null); assignee (a name, or null for Matt). Names go through the registry like
+ * transcribed ones ("Pat" → "Pat Example"). Each field that changes is recorded in items.edited, so re-transcribing
+ * the page never overwrites it, and as an event. A new due date or time resets the nudge count. Throws on invalid
+ * input. Returns the fields that changed.
  */
-export function editItem(id, changes) {
+export function editItem(id, changes, by) {
+  if (!by) throw new Error('an item change needs a client to attribute it to');
   const cur = db.prepare('SELECT * FROM items WHERE id=?').get(id);
   if (!cur) throw new Error('no such item');
   const next = {};
@@ -100,8 +136,8 @@ export function editItem(id, changes) {
   if (!changed.length) return [];
   const edited = [...new Set([...P(cur.edited), ...changed])];
   const reset = changed.includes('due') || changed.includes('due_time');
-  db.prepare(`UPDATE items SET ${changed.map((k) => `${k}=@${k}`).join(', ')}, edited=@edited
+  changeItem(id, by, () => db.prepare(`UPDATE items SET ${changed.map((k) => `${k}=@${k}`).join(', ')}, edited=@edited
     ${reset ? ', last_nudged=NULL, nudge_count=0' : ''} WHERE id=@id`)
-    .run({ ...next, edited: J(edited), id });
+    .run({ ...next, edited: J(edited), id }));
   return changed;
 }

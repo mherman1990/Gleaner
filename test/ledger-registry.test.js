@@ -34,7 +34,7 @@ test('a hand edit that resolves an ambiguous assignee clears the flag, and a re-
   const p = page();
   await read(p, [item('Ask about the numbers', { assignee: 'Alex' })]);
   assert.deepEqual(names(), [null, 'Alex', true]);
-  editItem(one().id, { assignee: 'Alex T' });
+  editItem(one().id, { assignee: 'Alex T' }, 'ui');
   assert.deepEqual(names(), [null, 'Alex Two', false], 'the edit resolves through write_as');
   await read(p, [item('Ask about the numbers', { existing_item_id: one().id, assignee: 'Pat' })]);
   assert.deepEqual(names(), [null, 'Alex Two', false], 'the hand edit outlasts a re-read naming someone else');
@@ -103,18 +103,18 @@ test('a partial re-read keeps the stored ambiguous name, still flagged', async (
 
 test('editing one name leaves the flag on the other ambiguous name', async () => {
   await read(page(), [item('Ask about the numbers', { person: 'Alex' })]);
-  editItem(one().id, { assignee: 'Sam' });
+  editItem(one().id, { assignee: 'Sam' }, 'ui');
   assert.deepEqual(names(), ['Alex', 'Sam Fixture', true]);
-  editItem(one().id, { assignee: null });
+  editItem(one().id, { assignee: null }, 'ui');
   assert.deepEqual(names(), ['Alex', null, true]);
-  editItem(one().id, { person: 'Alex O' });
+  editItem(one().id, { person: 'Alex O' }, 'ui');
   assert.deepEqual(names(), ['Alex One', null, false]);
 });
 
 test('person can be edited by hand; it resolves, is recorded, and survives a re-read', async () => {
   const p = page();
   await read(p, [item('Ask about the numbers', { person: 'Alex' })]);
-  assert.deepEqual(editItem(one().id, { person: 'Pat' }), ['person']);
+  assert.deepEqual(editItem(one().id, { person: 'Pat' }, 'ui'), ['person']);
   assert.deepEqual(names(), ['Pat Example', null, false]);
   assert.deepEqual(JSON.parse(one().edited), ['person']);
   await read(p, [item('Ask about the numbers', { existing_item_id: one().id, person: 'Alex' })]);

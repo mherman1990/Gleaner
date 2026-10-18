@@ -7,7 +7,7 @@ services:
       APP_HOST: herman-gleaner_web_1
       APP_PORT: 3717
       # Umbrel login stays on for the browser UI. /api/* is for machines (Claude, scripts),
-      # so it skips Umbrel login and Gleaner requires GLEANER_API_TOKEN there instead.
+      # so it skips Umbrel login and Gleaner requires its own per-client tokens there instead.
       PROXY_AUTH_WHITELIST: "/api/*"
 
   web:

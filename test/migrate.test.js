@@ -29,7 +29,7 @@ test('a v0.1.2 database gains the new columns and keeps its items', () => {
   assert.deepEqual([row.text, row.due, row.status, row.due_time, row.assignee, row.edited], ['USB Report', '2026-10-20', 'done', null, null, null]);
 
   setItemStatus(row.id, 'open', 'cli');
-  editItem(row.id, { due_time: '2pm', assignee: 'Jen' });
+  editItem(row.id, { due_time: '2pm', assignee: 'Jen' }, 'ui');
   const after = db.prepare('SELECT * FROM items WHERE code=1').get();
   assert.deepEqual([after.status, after.due_time, after.assignee, after.edited], ['open', '14:00', 'Jen', '["due_time","assignee"]']);
 });

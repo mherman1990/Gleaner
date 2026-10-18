@@ -7,6 +7,7 @@ import { DAILY_SYSTEM, DAILY_SCHEMA, WEEKLY_SYSTEM } from '../llm/prompts.js';
 import { itemLine, isDelegated } from '../output/markdown.js';
 import { currentRegistry, unregisteredTags, tagKey } from '../registry.js';
 import { buildTodaySheet } from './todaySheet.js';
+import { changesSince } from '../events.js';
 import { notify, pushToTablet } from '../notify/index.js';
 
 export const addDays = (d, n) => { const t = new Date(`${d}T12:00:00Z`); t.setUTCDate(t.getUTCDate() + n); return t.toISOString().slice(0, 10); };
@@ -34,6 +35,9 @@ export async function morningDigest({ push = true } = {}) {
   try {
     const today = localDate();
     const b = buckets(today);
+    // What people and clients changed since the last digest (24 hours if there's none): "Mayer closed 3 …".
+    const prev = db.prepare(`SELECT started_at FROM runs WHERE kind='digest' AND ok=1 AND id < ? ORDER BY id DESC LIMIT 1`).get(runId);
+    const changes = changesSince(prev?.started_at ?? new Date(Date.now() - 24 * 3600e3).toISOString());
     const recent = db.prepare(`SELECT p.page_date, d.name, p.summary FROM pages p JOIN documents d ON d.id=p.doc_id
       WHERE p.status='transcribed' AND p.page_date >= ? ORDER BY p.page_date DESC LIMIT 20`).all(addDays(today, -3));
 
@@ -50,6 +54,7 @@ export async function morningDigest({ push = true } = {}) {
     const md = [
       `# Today — ${localWeekday()}, ${today}`,
       `**${plan.headline}**`,
+      changes,
       sec('Top 3', top.map((i) => `${itemLine(i)}\n  - _${i.why}_`)),
       sec('Overdue', b.overdue.map(itemLine)),
       sec('Due today', b.dueToday.map(itemLine)),
@@ -59,7 +64,7 @@ export async function morningDigest({ push = true } = {}) {
       `_${b.items.length} open loops total. Close on the tablet: ✓14 · drop: x14 · snooze: 14 → Fri_`,
     ].filter(Boolean).join('\n\n');
 
-    const json = { date: today, generated_at: now(), plan, top, ...Object.fromEntries(Object.entries(b).map(([k, v]) => [k, v.map((i) => i.code)])) };
+    const json = { date: today, generated_at: now(), plan, top, changes, ...Object.fromEntries(Object.entries(b).map(([k, v]) => [k, v.map((i) => i.code)])) };
     fs.writeFileSync(path.join(paths.out, `digest-${today}.md`), md);
     fs.writeFileSync(path.join(paths.out, `digest-${today}.json`), JSON.stringify(json, null, 2));
     fs.writeFileSync(path.join(paths.out, 'digest-latest.md'), md);

@@ -2,8 +2,9 @@
 // schema_migrations. They only add tables, columns and indexes, so an older database upgrades in place.
 // Never edit one that has shipped; add the next number instead.
 import * as m001 from './001-baseline-v0.1.4.js';
+import * as m002 from './002-events.js';
 
-export const MIGRATIONS = [m001];
+export const MIGRATIONS = [m001, m002];
 
 /**
  * Apply every migration this database hasn't recorded. Returns the ids applied. Each one takes the write lock first

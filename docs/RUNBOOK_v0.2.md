@@ -50,3 +50,32 @@ holds after a restart too. `doctor` shows `"source": "last-good"` and the errors
 
 Each Sunday review ends with **Unregistered tags**: tags you wrote that the registry doesn't cover, with counts. Add
 the keepers as projects or aliases.
+
+---
+
+## Step 2 — API tokens
+
+After upgrading to the release with step 2. Each client gets its own token: who did what shows up in the events, and
+`cowork-notebook` can't see restricted projects.
+
+1. **Create the tokens**, on the Pi. Each command prints its token once; only its hash is kept, so save it right away
+   (a password manager is fine until the client that uses it is set up in steps 5–8):
+   ```
+   sudo docker exec herman-gleaner_web_1 node src/cli.js token add mayer --scopes all --sensitivity all
+   sudo docker exec herman-gleaner_web_1 node src/cli.js token add mcp --scopes all --sensitivity all
+   sudo docker exec herman-gleaner_web_1 node src/cli.js token add cowork-plan --scopes read,create,write --sensitivity all
+   sudo docker exec herman-gleaner_web_1 node src/cli.js token add cowork-notebook --scopes read --sensitivity normal
+   ```
+2. **Check them:** `sudo docker exec herman-gleaner_web_1 node src/cli.js token list` shows the four clients, with no
+   tokens or hashes. `doctor` shows the same under `tokens`.
+3. **Check the filter** (needs your registry from step 1). From a computer on your network or Tailscale, with the
+   `cowork-notebook` token:
+   ```
+   curl -s -H "Authorization: Bearer <cowork-notebook token>" "http://umbrel.local:3717/api/items?status=all"
+   ```
+   No item from a restricted project should be in it. The same request with the `mayer` token includes them.
+4. **The old token** (`GLEANER_API_TOKEN`) keeps working as client `legacy` through v0.2.x, so nothing breaks today.
+   Once every client uses its own token, delete that line from `gleaner.env`, restart the app, and rename the old
+   token file on your PC to `.gleaner-token.legacy`.
+
+To revoke a token (lost, or a client retired): `node src/cli.js token revoke <client>`. It takes effect at once.

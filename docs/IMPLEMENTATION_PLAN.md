@@ -1,6 +1,6 @@
 # Gleaner v0.2 — implementation plan
 
-Status: **agreed 2026-10-18** (decisions in §0). Step 1 is in progress. · Updated 2026-10-18
+Status: **agreed 2026-10-18** (decisions in §0). Step 1 is merged (PR #9); step 2 is in progress. · Updated 2026-10-18
 Implements `docs/INTEGRATIONS_SPEC.md` (the spec) under the rules in the kickoff prompt.
 Baseline: `main` at v0.1.5 (PR #7 merged: *Ingest now* waits for the read). The v0.1.5 tag is yours to push or skip.
 

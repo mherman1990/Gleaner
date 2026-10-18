@@ -25,8 +25,8 @@ App Store → ⋯ → Community App Stores.
 
 1. **Install** Gleaner from Herman Apps in the Umbrel UI.
 2. **Secrets and config:** create `~/umbrel/app-data/herman-gleaner/data/gleaner.env` from `config/gleaner.env.example`.
-   Set at least `ANTHROPIC_API_KEY` and `GLEANER_API_TOKEN` (without a token, `/api` stays disabled). A `config.json`
-   is optional; see `config/config.example.json`. Restart the app.
+   Set at least `ANTHROPIC_API_KEY`. A `config.json` is optional; see `config/config.example.json`. Restart the app.
+   `/api` stays disabled until it has a token: see [API](#api) for `token add`.
 3. **Register rmapi with your reMarkable account** (one time). Get a code at
    `https://my.remarkable.com/device/browser/connect`, then:
    ```
@@ -93,12 +93,42 @@ for the format. The real file never goes in this repo, which is public; any file
 - **Run log:** every read logs the registry version (a hash of the file).
 - **Without a registry:** the flat `tags` list in `config.json` seeds the transcriber instead.
 
-## API (Bearer token)
+## API
 
-`GET /api/items[?status=open|snoozed|closed|all&tag=45Z]` ·
+`GET /api/items[?status=open|snoozed|closed|all&tag=45Z]` · `GET /api/items/:code` ·
 `POST /api/items/:code {status: done|dropped|open|snoozed, until, text, due, due_time, person, assignee}` (any of them; `null` clears) ·
 `GET /api/open-loops.md` · `GET /api/digest/today` · `GET /api/notes[?from&to]` · `GET /api/notes/:date` ·
-`GET /api/search?q=` · `POST /api/ingest {mode: sync|batch}` · `POST /api/digest {push}` · `GET /api/status`
+`GET /api/search?q=` · `GET /api/events[?since&client]` · `POST /api/ingest {mode: sync|batch}` · `POST /api/digest {push}` ·
+`GET /api/status`
+
+**Tokens.** Every `/api` request needs `Authorization: Bearer <token>`, and each client has its own. Make one on the Pi:
+```
+sudo docker exec herman-gleaner_web_1 node src/cli.js token add mayer --scopes all --sensitivity all
+```
+It prints the token once; `/data/tokens.json` keeps only its sha256 hash (mode 0600). `token list` shows the clients
+and `token revoke <client>` removes one; both take effect without a restart. `GLEANER_API_TOKEN` still works through
+v0.2.x, as client `legacy` with every scope. With no token at all, `/api` is disabled (503). The browser UI uses
+`/ui/api`, behind Umbrel's login, as client `ui`.
+
+| Scope | Routes |
+|---|---|
+| `read` | every `GET` above |
+| `write` | `POST /api/items/:code` |
+| `ingest` | `POST /api/ingest` |
+| `digest` | `POST /api/digest` |
+| `create` | `POST /api/items` (v0.2 step 3) |
+
+**Sensitivity.** A token made with `--sensitivity normal` (the default) never gets restricted work back: projects
+marked `sensitivity: restricted` in the registry. An item is left out if any of its tags is restricted or it was
+written on a page that has one; a page is left out whole. Notes are rendered without those pages, and search, events,
+open loops and the page counts in `status` leave them out too. The digest covers all work, so it's a 403. With no
+registry loaded nothing can be judged, so these tokens get 503 until one is.
+
+**Audit trail.** Every change to an item writes a row per changed field to `events`: who (`handwriting`, `erased`,
+`ui`, `cli`, `legacy`, or the token's client), the item, the field, and the old and new values. `closed_by` is the
+client too. `GET /api/events?since=today|YYYY-MM-DD|<ISO time>&client=mayer` lists them, oldest first (default: the
+last 24 hours; at most 1,000). The morning digest says what people and clients changed since the last digest, e.g.
+"Mayer closed 3, dropped 1 (see events)."
 
 Items carry `tags`, `unregistered_tags` (tags the registry doesn't cover) and `person_ambiguous` (the person or
 assignee is a first name two registry people share). Both are worked out against the registry in use when the item

@@ -156,8 +156,8 @@ test('hand edits survive a re-read of the page; fields not edited still follow t
   const p = page();
   await apply(p, result([item('USB Report', { due: '2026-10-20' })]));
   const it = byCode(1);
-  assert.deepEqual(editItem(it.id, { text: 'USB report draft', due_time: '2pm', assignee: 'Jen' }), ['text', 'due_time', 'assignee']);
-  assert.deepEqual(editItem(it.id, { assignee: 'Jen' }), [], 'no change, nothing marked');
+  assert.deepEqual(editItem(it.id, { text: 'USB report draft', due_time: '2pm', assignee: 'Jen' }, 'ui'), ['text', 'due_time', 'assignee']);
+  assert.deepEqual(editItem(it.id, { assignee: 'Jen' }, 'ui'), [], 'no change, nothing marked');
 
   await apply(p, result([item('USB Report', { existing_item_id: it.id, due: '2026-10-22', person: 'Tom', assignee: 'Kelsey' })]));
   const after = byCode(1);
@@ -171,22 +171,22 @@ test('hand edits survive a re-read of the page; fields not edited still follow t
 test('editItem: clearing, defaults, validation, and fresh nudges for a new deadline', async () => {
   await apply(page(), result([item('Edit me')]));
   const id = byCode(1).id;
-  editItem(id, { due_time: '15:00' });
+  editItem(id, { due_time: '15:00' }, 'ui');
   assert.deepEqual([byCode(1).due, byCode(1).due_time], [localDate(), '15:00'], 'a time alone means today');
   db.prepare(`UPDATE items SET last_nudged='2026-10-01T12:00:00Z', nudge_count=3 WHERE id=?`).run(id);
-  editItem(id, { due: '2026-10-30' });
+  editItem(id, { due: '2026-10-30' }, 'ui');
   assert.deepEqual([byCode(1).due, byCode(1).due_time, byCode(1).nudge_count, byCode(1).last_nudged], ['2026-10-30', '15:00', 0, null]);
-  editItem(id, { due: null });
+  editItem(id, { due: null }, 'ui');
   assert.deepEqual([byCode(1).due, byCode(1).due_time], [null, null], 'no date, no time');
-  editItem(id, { assignee: '  Jen  ' });
+  editItem(id, { assignee: '  Jen  ' }, 'ui');
   assert.equal(byCode(1).assignee, 'Jen');
-  editItem(id, { assignee: '' });
+  editItem(id, { assignee: '' }, 'ui');
   assert.equal(byCode(1).assignee, null);
-  assert.throws(() => editItem(id, { due: '10/30' }), /YYYY-MM-DD/);
-  assert.throws(() => editItem(id, { due: '2026-02-31' }), /YYYY-MM-DD/);
-  assert.throws(() => editItem(id, { due_time: 'soon' }), /time like/);
-  assert.throws(() => editItem(id, { due: null, due_time: '9am' }), /needs a due date/);
-  assert.throws(() => editItem(id, { text: '  ' }), /empty/);
+  assert.throws(() => editItem(id, { due: '10/30' }, 'ui'), /YYYY-MM-DD/);
+  assert.throws(() => editItem(id, { due: '2026-02-31' }, 'ui'), /YYYY-MM-DD/);
+  assert.throws(() => editItem(id, { due_time: 'soon' }, 'ui'), /time like/);
+  assert.throws(() => editItem(id, { due: null, due_time: '9am' }, 'ui'), /needs a due date/);
+  assert.throws(() => editItem(id, { text: '  ' }, 'ui'), /empty/);
   assert.equal(byCode(1).due, null, 'a rejected edit changes nothing');
 });
 
