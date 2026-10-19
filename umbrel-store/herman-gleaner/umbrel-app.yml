@@ -4,7 +4,7 @@ name: Gleaner
 tagline: Handwritten reMarkable notes become an open-loop task list
 icon: https://raw.githubusercontent.com/mherman1990/spotter-umbrel-store/main/herman-gleaner/icon.svg
 category: productivity
-version: "0.1.5"
+version: "0.2.0"
 port: 3717
 description: >-
   Gleaner reads the notebooks in one folder of your reMarkable (/Daily by
@@ -53,9 +53,15 @@ backupIgnore:
   - data/raw/*
   - data/renders/*
 releaseNotes: >-
-  Ingest now waits for the read to finish and says what it found: pages
-  read, new items, and how long it took. A read in progress no longer shows
-  as FAILED. The log now records how long each page takes to render and to
-  transcribe.
+  A projects file (projects.yaml in the data folder) gives tags aliases,
+  maps people's short names to full names, and can mark a project
+  restricted. Each API client now gets its own token and scopes (see the
+  README); a token marked normal never sees restricted projects, and your
+  existing GLEANER_API_TOKEN keeps working. Every change to an item is
+  logged with who made it, and the morning digest says who closed what.
+  Handwriting: a line moved to another page keeps its number, striking a
+  line cancels its task, a done task written again is a new item, a reopen
+  by hand sticks, and a page erased blank or deleted drops its open tasks.
+  Ingest now waits for the read to finish and says what it found.
 submitter: Matt Herman
 submission: https://github.com/mherman1990/Gleaner
