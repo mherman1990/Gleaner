@@ -95,6 +95,8 @@ Read README.md for setup and docs/HANDWRITING.md for the notation the extractor 
   without a token (`/data/tokens.json`, or the legacy `GLEANER_API_TOKEN`).
 - **v0.2 work follows `docs/IMPLEMENTATION_PLAN.md`** (one PR per spec step, each with its acceptance test). Steps
   that need Matt's hands (tokens, keys, Telegram/Signal, OpenClaw, Tailscale, Cowork) go in `docs/RUNBOOK_v0.2.md`.
+- Reviews: one review pass per PR, fix what it confirms, then hand the PR to Matt. No repeated verify rounds: his real
+  pages are the better test.
 - Tests: `npm test` (node:test, mock LLM, temp data dirs). Tests that need the real request shape point the SDK at
   `test/fakes/anthropic.js` (`ANTHROPIC_BASE_URL`), which also reports prompt-cache reads. Fixture content is invented. The end-to-end tests need `rmc` and `cairosvg` on PATH
   and skip without them. Run it before every push; CI runs it plus an image build on each PR.
@@ -107,8 +109,9 @@ Read README.md for setup and docs/HANDWRITING.md for the notation the extractor 
 - While developing against the real account, set `GLEANER_TABLET_SHEET=false` and leave the Teams/ntfy env vars unset,
   so test runs don't write to his tablet or ping his phone. Turn them on only when he says so.
 - Read-only toward the tablet, except the `_Today` sheet upload. Never delete or move tablet documents.
-- Note text and page images are personal and work-sensitive. Don't log transcriptions beyond what's needed to debug,
-  and don't add any new outbound destination without asking.
+- Privacy: Gleaner runs on Matt's own Pi, the notes are his, and Telegram goes only to him. Keep the restricted-project
+  filter (`src/sensitivity.js`) as built, and give a new read route its `visibility()` call and probe, but don't add
+  more privacy machinery (Telegram included) unless he asks. Ask before adding a new outside service.
 
 ## v0.1 status: what's verified and what isn't
 Verified offline with fixtures and the mock LLM, and covered by `npm test`:
