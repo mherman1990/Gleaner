@@ -143,7 +143,7 @@ test('HTTP API: token, items, status changes, notes', { skip }, async (t) => {
   assert.equal((await post('/api/items/9999', { status: 'done' })).status, 404);
   const done = await (await post(`/api/items/${code}`, { status: 'done' })).json();
   assert.equal(done.status, 'done');
-  assert.equal(done.closed_by, 'api');
+  assert.equal(done.closed_by, 'legacy', 'the GLEANER_API_TOKEN client');
   assert.match(fs.readFileSync(dayFile, 'utf8'), new RegExp(`#${code}\\*\\*.*\\*done\\*`), 'day file shows the new status');
   assert.ok(!(await (await get('/api/open-loops.md')).text()).includes(`#${code}**`));
 
@@ -181,7 +181,7 @@ test('HTTP API: token, items, status changes, notes', { skip }, async (t) => {
   assert.equal(status.busy, null);
   assert.ok(status.runs.length > 0);
 
-  assert.equal((await get('/ui/api/items', {})).status, 200, 'UI mount relies on the Umbrel proxy for auth');
+  assert.equal((await get('/ui-api/items', {})).status, 200, 'UI mount relies on the Umbrel proxy for auth');
   assert.match(await (await get('/', {})).text(), /<title>Gleaner<\/title>/);
 });
 

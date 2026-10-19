@@ -7,7 +7,7 @@ import { tempEnv } from './helpers.js';
 
 tempEnv('llm');
 const { structuredParams, structuredOutput } = await import('../src/llm/client.js');
-const { RECORD_PAGE_SCHEMA, MATCH_SCHEMA, DAILY_SCHEMA, transcribeUser } = await import('../src/llm/prompts.js');
+const { RECORD_PAGE_SCHEMA, MATCH_SCHEMA, DAILY_SCHEMA, transcribeUser, transcribeSystem } = await import('../src/llm/prompts.js');
 const { mockFor } = await import('../src/llm/mock.js');
 const { isTaskList } = await import('../src/config.js');
 
@@ -100,6 +100,15 @@ test('only task-list pages tell the model every line is a to-do', () => {
   const text = (taskList) => transcribeUser({ docName: 'To do', pageIndex: 0, dateHint: '2026-10-17', typedText: '', priorItems: [], imageB64: '', taskList })[1].text;
   assert.match(text(true), /TASK LIST/);
   assert.doesNotMatch(text(false), /TASK LIST/);
+});
+
+// The ledger cancels a task by its struck line (status "dropped", linked to its item), so the model must return it
+// rather than leave it out: a line left out reads as erased, which a rewrite elsewhere would take as a move.
+test('the prompt asks for a struck line as a dropped item, on any page and in task lists', () => {
+  const system = transcribeSystem(null);
+  assert.match(system, /struck-through line[^]*status "dropped"[^]*existing_item_id/);
+  assert.match(system, /crossed-out one an item with status\s+"dropped"/);
+  assert.doesNotMatch(system, /do not create an item for it|crossed-out lines are still not items/);
 });
 
 test('the mock returns what the schemas describe', () => {

@@ -31,10 +31,13 @@ export function mockFor(params, purpose) {
   }
   if (purpose === 'dedupe') {
     // Same commitment = same text; the [person] label may differ ("Alex" rewritten from "Alex One").
+    // Any line may match an OPEN or ERASED item; a ticked one a CLOSED item of its page first, an OTHER one last.
     const bare = (t) => t.replace(/ \[[^\]]*\]$/, '').trim();
-    const news = [...text.matchAll(/^NEW (\S+): (.+)$/gm)].map((m) => ({ ref: m[1], t: bare(m[2]) }));
-    const olds = [...text.matchAll(/^OPEN (\d+): (.+)$/gm)].map((m) => ({ code: Number(m[1]), t: bare(m[2]) }));
-    return { matches: news.flatMap((n) => olds.filter((o) => o.t === n.t).slice(0, 1).map((o) => ({ new_ref: n.ref, code: o.code }))) };
+    const news = [...text.matchAll(/^NEW (\S+): (.+?)( \(ticked\))?$/gm)].map((m) => ({ ref: m[1], t: bare(m[2]), ticked: !!m[3] }));
+    const olds = [...text.matchAll(/^(OPEN|CLOSED|ERASED|OTHER) (\d+): (.+)$/gm)].map((m) => ({ kind: m[1], code: Number(m[2]), t: bare(m[3]) }));
+    const order = (n) => (n.ticked ? { CLOSED: 0, OPEN: 1, ERASED: 1, OTHER: 2 } : { OPEN: 0, ERASED: 0 });
+    const pick = (n) => olds.filter((o) => o.t === n.t && o.kind in order(n)).sort((a, b) => order(n)[a.kind] - order(n)[b.kind])[0];
+    return { matches: news.flatMap((n) => (pick(n) ? [{ new_ref: n.ref, code: pick(n).code }] : [])) };
   }
   if (purpose === 'digest') {
     const codes = [...text.matchAll(/^#(\d+)/gm)].map((m) => Number(m[1])).slice(0, 3);

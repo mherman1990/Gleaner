@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { paths, localDate, fmtTime } from '../config.js';
 import { db, P, openItems } from '../db.js';
+import { ALL } from '../sensitivity.js';
 
 const KIND_ICON = { action: '☐', followup: '→', waiting: '←', decision: 'DEC', idea: 'idea', question: '?' };
 
@@ -25,12 +26,14 @@ export function dayFilePath(date) {
   return path.join(paths.notes, date.slice(0, 4), `${date}.md`);
 }
 
-export function renderDay(date) {
+/** One day's markdown, or null when it has no pages. `vis` (src/sensitivity.js) leaves out what a client may not see. */
+export function renderDay(date, vis = ALL) {
   const pages = db.prepare(`SELECT p.*, d.name AS doc_name FROM pages p JOIN documents d ON d.id = p.doc_id
-    WHERE p.page_date = ? AND p.status = 'transcribed' ORDER BY d.name, p.page_index`).all(date);
+    WHERE p.page_date = ? AND p.status = 'transcribed' ORDER BY d.name, p.page_index`).all(date).filter(vis.page);
   if (!pages.length) return null;
   const tags = [...new Set(pages.flatMap((p) => P(p.tags)))].sort();
-  const items = db.prepare(`SELECT DISTINCT i.* FROM items i JOIN item_mentions m ON m.item_id=i.id WHERE m.page_date=? ORDER BY i.code`).all(date);
+  const items = db.prepare(`SELECT DISTINCT i.* FROM items i JOIN item_mentions m ON m.item_id=i.id WHERE m.page_date=? ORDER BY i.code`)
+    .all(date).filter(vis.item);
 
   const fm = ['---', `date: ${date}`, `tags: [${tags.join(', ')}]`, `pages: ${pages.length}`,
     `notebooks: [${[...new Set(pages.map((p) => JSON.stringify(p.doc_name)))].join(', ')}]`, `generated_by: gleaner`, '---'];
@@ -66,9 +69,9 @@ export function refreshItemOutputs(itemIds) {
   writeOpenLoops();
 }
 
-export function renderOpenLoops() {
+export function renderOpenLoops(vis = ALL) {
   const today = localDate();
-  const items = openItems();
+  const items = openItems().filter(vis.item);
   const groups = {
     'Overdue': items.filter((i) => i.due && i.due < today),
     'Due today': items.filter((i) => i.due === today),

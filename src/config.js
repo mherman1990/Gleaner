@@ -66,7 +66,9 @@ const defaults = {
   // The project registry: canonical tags, aliases, people, sensitivity. Lives on the Pi, never in the repo
   // (see config/projects.example.yaml). Without it, the flat `tags` list below seeds the transcriber.
   registry: { path: path.join(DATA_DIR, 'projects.yaml') },
-  server: { port: 3717, apiToken: '' }, // /api requires this Bearer token and is disabled while it's empty
+  // Per-client API tokens (hashes only); see src/auth.js. apiToken is the legacy single token (client "legacy").
+  auth: { tokensPath: path.join(DATA_DIR, 'tokens.json') },
+  server: { port: 3717, apiToken: '' }, // /api is disabled while there's no token in tokens.json and this is empty
   tags: [
     // Seed vocabulary, used only while no project registry is loaded. Edit in /data/config.json.
     '45Z', 'RFS', 'SRE', 'CoverCress', 'PULA', 'FIFRA', 'farm-bill', 'China-trade', 'Brazil',
@@ -107,6 +109,7 @@ function fromEnv() {
   set(['source', 'sshHost'], e.GLEANER_SSH_HOST);
   set(['source', 'fixtureDir'], e.GLEANER_FIXTURE_DIR);
   set(['registry', 'path'], e.GLEANER_REGISTRY);
+  set(['auth', 'tokensPath'], e.GLEANER_TOKENS);
   set(['llm', 'mode'], e.GLEANER_LLM);
   if (e.GLEANER_USE_BATCH) set(['llm', 'useBatch'], e.GLEANER_USE_BATCH === 'true');
   set(['notify', 'teamsWebhookUrl'], e.GLEANER_TEAMS_WEBHOOK);

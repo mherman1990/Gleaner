@@ -34,9 +34,9 @@ description: >-
   search
 
 
-  Setup after install: put ANTHROPIC_API_KEY and GLEANER_API_TOKEN in
-  gleaner.env in the app's data folder, then register rmapi once with a
-  code from your reMarkable account. The README has the steps.
+  Setup after install: put ANTHROPIC_API_KEY in gleaner.env in the app's
+  data folder, register rmapi once with a code from your reMarkable account,
+  and create an API token for each client. The README has the steps.
 developer: Matt Herman
 website: https://github.com/mherman1990/Gleaner
 repo: https://github.com/mherman1990/Gleaner

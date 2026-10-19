@@ -17,7 +17,7 @@ or an explicit commitment ("I'll send…"). Ordinary notes stay notes, so the ta
 | `@Jen thing` · `Jen to …` · `owner: Jen` | Assigned to Jen (shown as waiting on others) |
 | `#kite-study` or a circled word | Project tag. Any alias listed in `projects.yaml` (say `#kites` for `kite-study`) is stored as the canonical tag |
 | checked box `☑` | That item is done |
-| strike through a line | Cancelled; no item is created |
+| strike through a line | That item is cancelled (a struck line that was never an item creates none) |
 
 Short names work too: if `projects.yaml` lists `Pat` under a person's `write_as`, `→ Pat: …` is stored with the
 full name. A first name two people share stays as written and is flagged, so write a short form that tells them apart
@@ -35,6 +35,11 @@ not on the sheet. The sheet is replaced every morning and its annotations are no
 | `14 → Fri` · `snooze 14 10/23` | Item 14 hidden until then |
 
 Rewriting the same item on a new day is fine. Gleaner links it to the original and counts the days you've carried it.
+Moving a line to another page (lasso, or cut and paste) keeps its number too, as long as it's on the new page by the
+next sync (within a few hours). Erasing a line drops its task; writing it back within those few hours brings the same
+task back. Striking a line through cancels its task. For a task written on more than one page, strike its newest line:
+striking an older copy only retires that copy, and a struck line written again elsewhere is a new item. A task you
+tick, strike or erase and write again (or whose tick you erase) is a new item each time.
 At 3+ days, the Today sheet calls it out.
 
 Anything you set with **Edit** in the browser (text, due date and time, assignee) wins over the page from then on:
@@ -43,5 +48,5 @@ re-reading the page won't overwrite it.
 ## Task-list notebooks
 
 In a notebook listed as a task list (by default, the one named **To do**), every line you write is a to-do, so no
-box or arrow is needed. Headings and crossed-out lines are skipped, and a ticked line is recorded as done. The list of
-task-list notebooks is `notebooks.taskLists` in `config.json`.
+box or arrow is needed. Headings are skipped, a ticked line is recorded as done, and a crossed-out line cancels its
+task. The list of task-list notebooks is `notebooks.taskLists` in `config.json`.

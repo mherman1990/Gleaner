@@ -1,6 +1,6 @@
 # Plain docker compose (dev, or any non-Umbrel host). On Umbrel, install herman-gleaner from the Herman Apps store
-# (see umbrel-store/). Without Umbrel's proxy in front, the browser UI and its /ui/api have no login of their own;
-# keep this port on a trusted network. /api still requires GLEANER_API_TOKEN.
+# (see umbrel-store/). Without Umbrel's proxy in front, the browser UI and its /ui-api have no login of their own;
+# keep this port on a trusted network. /api still requires a token (tokens.json, or the legacy GLEANER_API_TOKEN).
 services:
   gleaner:
     build: .

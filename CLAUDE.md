@@ -16,7 +16,23 @@ Read README.md for setup and docs/HANDWRITING.md for the notation the extractor 
   - Same-page items update in place via `existing_item_id`.
   - Number closes (`✓14`, `x14`, `14 → Fri`) act on earlier items.
   - New items are deduped against open loops by Haiku; a match bumps `carry_days`.
-  - An item that came from only one page and was erased from it is dropped.
+  - A line no longer on a page is marked gone there (`item_mentions.gone_at`; the row stays for the sensitivity
+    filter), and an open item (or one whose snooze is over) with no line left on any page is dropped as "erased". A
+    page that renders blank, or is deleted on the tablet (status `deleted`, never read again), counts as every line
+    gone (`pageEmptied`). Items whose line left a page in the last 6 hours (`MOVED_WITHIN_HOURS`: the same sync or the
+    next) are dedupe candidates: a line cut from one page and pasted on another is the same item, moved (an erased drop
+    reopens). Striking a line through cancels it, as the notation says; it isn't a move. The model returns a struck
+    line as a "dropped" item, and one that matches no item is nothing; a struck line older than the item's line on
+    another page (`item_mentions.linked_at`) ends only that copy. The rules for which item a line is are listed at
+    `applyPageResult`, and the dedupe's labels (OPEN, ERASED, CLOSED, OTHER) at `matchExisting`. A line written again
+    on its page after its item was closed and its line left it, long after an erased drop, or in place of its ticked
+    or struck line (`item_mentions.mark`: how the line was last read) is a new item, linked to the old one in
+    `item_sources`. A tick, strike or close by number already read isn't applied again, so a person's reopen sticks.
+    A close by number, a struck line, or a person dropping it, makes an erased item's drop final. A due date changed
+    on the page, or a time on a dated page, resets the nudges, as a hand edit does. Accepted trade-offs: a line a
+    read missed that comes back over 6 hours later, or after its item was closed meanwhile, is a new item; a moved
+    line whose new page is read before its old one can't match a closed or snoozed item's unticked line; a tick the
+    model misses on a re-read makes the task a new open item.
   - In task-list notebooks (`notebooks.taskLists`, default `["To do"]`), every written line is an item. Elsewhere
     only the notation or an explicit commitment makes one. The rule is in the cached system prompt, and the
     per-page flag is in the user turn.
@@ -33,6 +49,26 @@ Read README.md for setup and docs/HANDWRITING.md for the notation the extractor 
     transcription prompt and reloads when the file changes (stat incl. ctime). Every valid version is saved as
     `.projects.yaml.last-good`, which a broken file falls back to in any process; unknown keys only warn.
     **Never commit Matt's `projects.yaml`:** this repo is public and the file names colleagues and restricted work.
+- **API clients, sensitivity, audit trail** (v0.2 step 2):
+  - `src/auth.js`: per-client tokens in `/data/tokens.json`, sha256 hashes only (mode 0600, re-read when it changes),
+    each with scopes (`read`, `write`, `create`, `ingest`, `digest`) and a sensitivity (`all` or `normal`). CLI
+    `token add|revoke|list`. `GLEANER_API_TOKEN` is client `legacy` through v0.2.x; `/ui-api` is client `ui`.
+  - `src/sensitivity.js`: every route that returns content asks `visibility()`. At `normal`, an item whose tags are
+    or were restricted (aliases count; history from the events), or mentioned on a page whose tags are or were
+    restricted (`page_tags`), or written from such an item (`item_sources`, followed to the end), is left out of
+    everything, and so is any page that mentions, closes or snoozes one (`page_closes`). These tables (migration 003)
+    are only added to, so a re-read never unhides anything; rows another process wrote after the judgement are
+    hidden; with no registry it's a 503. Each GET route reads in one transaction with its `visibility()` call, and
+    `POST /items/:code` checks and writes under one write lock.
+    `applyPageResult` writes a page and its items in one transaction, after the dedupe call. The prompt lists only a
+    page's own lines; the items it closed or snoozed (`closedOnPage`) are kept out of it, so the model can't read "✓14"
+    back as item 14's line. A ticked line read again without its id is matched in code (same words as a done item of
+    the page) or by the dedupe (done items are offered, labelled CLOSED, to ticked lines only), and a match to an item
+    the page closed changes nothing.
+    `test/sensitivity.test.js` sweeps every GET route; a new route needs a probe there.
+  - Every item write goes through `changeItem()` / `recordEvent()` in `src/db.js`, which write the `events` rows
+    with the client; `editItem()` and `setItemStatus()` require one. `src/events.js` reads them (`/api/events`, the
+    digest's "Mayer closed 3" line). A new mutating route needs an events test (`test/events.test.js` checks).
 - **Schema changes are numbered migrations** in `src/migrations/` (runner in `index.js`, recorded in
   `schema_migrations`). They only add things; never edit one that has shipped. `001-baseline-v0.1.4` is the schema
   from before the runner. `test/migrate.test.js` runs every migration against `test/fixtures/v0.1.4.sql`.
@@ -56,9 +92,11 @@ Read README.md for setup and docs/HANDWRITING.md for the notation the extractor 
   and `umbrel-app-store.yml` belong to the spotter repo; never sync them from here. Spotter's release runs
   `check-store.mjs` over every app folder, so `herman-gleaner/` must keep passing it (`test/store.test.js` enforces this;
   `scripts/check-store.mjs` is a verbatim copy of Spotter's). `/api/*` skips Umbrel login, so it stays disabled
-  without `GLEANER_API_TOKEN`.
+  without a token (`/data/tokens.json`, or the legacy `GLEANER_API_TOKEN`).
 - **v0.2 work follows `docs/IMPLEMENTATION_PLAN.md`** (one PR per spec step, each with its acceptance test). Steps
   that need Matt's hands (tokens, keys, Telegram/Signal, OpenClaw, Tailscale, Cowork) go in `docs/RUNBOOK_v0.2.md`.
+- Reviews: one review pass per PR, fix what it confirms, then hand the PR to Matt. No repeated verify rounds: his real
+  pages are the better test.
 - Tests: `npm test` (node:test, mock LLM, temp data dirs). Tests that need the real request shape point the SDK at
   `test/fakes/anthropic.js` (`ANTHROPIC_BASE_URL`), which also reports prompt-cache reads. Fixture content is invented. The end-to-end tests need `rmc` and `cairosvg` on PATH
   and skip without them. Run it before every push; CI runs it plus an image build on each PR.
@@ -71,8 +109,9 @@ Read README.md for setup and docs/HANDWRITING.md for the notation the extractor 
 - While developing against the real account, set `GLEANER_TABLET_SHEET=false` and leave the Teams/ntfy env vars unset,
   so test runs don't write to his tablet or ping his phone. Turn them on only when he says so.
 - Read-only toward the tablet, except the `_Today` sheet upload. Never delete or move tablet documents.
-- Note text and page images are personal and work-sensitive. Don't log transcriptions beyond what's needed to debug,
-  and don't add any new outbound destination without asking.
+- Privacy: Gleaner runs on Matt's own Pi, the notes are his, and Telegram goes only to him. Keep the restricted-project
+  filter (`src/sensitivity.js`) as built, and give a new read route its `visibility()` call and probe, but don't add
+  more privacy machinery (Telegram included) unless he asks. Ask before adding a new outside service.
 
 ## v0.1 status: what's verified and what isn't
 Verified offline with fixtures and the mock LLM, and covered by `npm test`:

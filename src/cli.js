@@ -11,6 +11,9 @@
 //   due <code> <YYYY-MM-DD> [time] | due <code> none     set or clear the due date and time (14:00, 2pm)
 //   assign <code> <name> | assign <code> none
 //   registry check [file]   validate a projects.yaml (default: the one in use) before deploying it
+//   token add <client> --scopes read,write|all [--sensitivity normal|all]   prints the new token once
+//   token revoke <client> | token list
+// Changes made here are attributed to client "cli".
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import { config } from './config.js';
@@ -20,9 +23,11 @@ import { ingest, markForRetranscription } from './pipeline/ingest.js';
 import { morningDigest, reminderSweep, weeklyReview } from './digest/digest.js';
 import { renderOpenLoops, refreshItemOutputs, itemLine } from './output/markdown.js';
 import { parseRegistry, registryStatus } from './registry.js';
+import { addToken, revokeToken, tokenStatus } from './auth.js';
 
 const [cmd, ...args] = process.argv.slice(2);
 const flag = (f) => args.includes(f);
+const option = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
 function itemByCode(code) {
   const item = db.prepare('SELECT id FROM items WHERE code=?').get(Number(code));
   if (!item) throw new Error(`no item #${code}`);
@@ -36,6 +41,7 @@ async function main() {
       try { out.rmc = execFileSync('rmc', ['--version']).toString().trim(); } catch (e) { out.rmc = `missing: ${e.message}`; }
       out.apiKey = !!process.env.ANTHROPIC_API_KEY;
       out.registry = registryStatus();
+      out.tokens = tokenStatus();
       out.source = await source().doctor().catch((e) => ({ error: e.message }));
       console.log(JSON.stringify(out, null, 2));
       break;
@@ -86,13 +92,30 @@ async function main() {
       if (!rest.length) throw new Error(cmd === 'due' ? 'usage: due N YYYY-MM-DD [time] | due N none' : 'usage: assign N <name> | assign N none');
       const none = rest[0] === 'none';
       editItem(item.id, cmd === 'assign' ? { assignee: none ? null : rest.join(' ') }
-        : none ? { due: null } : { due: rest[0], due_time: rest.slice(1).join(' ') || null });
+        : none ? { due: null } : { due: rest[0], due_time: rest.slice(1).join(' ') || null }, 'cli');
       refreshItemOutputs([item.id]);
       console.log(itemLine(db.prepare('SELECT * FROM items WHERE id=?').get(item.id)));
       break;
     }
+    case 'token': {
+      const [sub, client] = args;
+      if (sub === 'add' && client) {
+        const token = addToken(client, { scopes: option('--scopes'), sensitivity: option('--sensitivity') ?? 'normal' });
+        const t = tokenStatus().clients.find((c) => c.client === client);
+        console.log(`${client}: scopes ${t.scopes.join(', ')}; sensitivity ${t.sensitivity}\n` +
+          `Token (shown once, only its hash is kept; save it where ${client} reads it):\n${token}`);
+      } else if (sub === 'revoke' && client) {
+        console.log(revokeToken(client) ? `${client}: revoked` : `${client} has no token`);
+      } else if (sub === 'list') {
+        const s = tokenStatus();
+        if (s.error) console.log(`${s.path} is ignored: ${s.error}`);
+        console.log(s.clients.map((c) => `${c.client}\t${c.scopes.join(',')}\t${c.sensitivity}\t${c.created ?? ''}`).join('\n') || 'no tokens');
+        if (s.legacy) console.log('legacy\tall\tall\t(GLEANER_API_TOKEN)');
+      } else throw new Error('usage: token add <client> --scopes read,write|all [--sensitivity normal|all] | token revoke <client> | token list');
+      break;
+    }
     default:
-      console.log('usage: gleaner doctor | ingest [--sync] | digest [--push] | remind | weekly [--push] | items [snoozed|closed|all] | retranscribe all|YYYY-MM-DD|"<notebook>" | done N | drop N | snooze N YYYY-MM-DD | reopen N | due N YYYY-MM-DD [time] | due N none | assign N <name> | assign N none | registry check [file]');
+      console.log('usage: gleaner doctor | ingest [--sync] | digest [--push] | remind | weekly [--push] | items [snoozed|closed|all] | retranscribe all|YYYY-MM-DD|"<notebook>" | done N | drop N | snooze N YYYY-MM-DD | reopen N | due N YYYY-MM-DD [time] | due N none | assign N <name> | assign N none | registry check [file] | token add <client> --scopes … [--sensitivity …] | token revoke <client> | token list');
   }
 }
 main().then(() => process.exit(process.exitCode ?? 0)).catch((e) => { console.error(e.message); process.exit(1); });
