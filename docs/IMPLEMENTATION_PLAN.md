@@ -120,8 +120,9 @@ Same shape as step 5: `src/notify/signal.js` (`POST /v2/send`, sender `GLEANER_S
 ### Step 7 — Local MCP
 | Area | Changes |
 |---|---|
-| New files | `gleaner-mcp/` (`server.mjs` stdio MCP with JSON-RPC by hand and no dependencies; `README.md`); `test/mcp.test.js` |
-| Tests | `initialize` and `tools/list` (one tool per skill command, with JSON schemas). `tools/call` against a test server. Errors come back as `isError`. Office reach and the ACL are runbook checks. |
+| New files | `gleaner-mcp/` (`server.mjs` stdio MCP with JSON-RPC by hand and no dependencies; `manifest.json`, so it installs in the Claude app as a `.mcpb` extension; `README.md`); `scripts/pack-mcpb.mjs`; `test/mcp.test.js` |
+| Tests | `initialize` and `tools/list` (one tool per ledger action, with JSON schemas and read-only hints). `tools/call` against a test server, recorded under the token's client. Errors come back as `isError`. The manifest matches the server and the bundle packs. Office reach and the ACL are runbook checks. |
+| Then | A Claude artifact over the extension (`host:gleaner`): open items to tick off, drop, snooze, edit and add, in the Claude app. |
 
 ### Step 8 — Cowork tasks
 | Area | Changes |

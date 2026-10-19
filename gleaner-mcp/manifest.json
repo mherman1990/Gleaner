@@ -1,0 +1,55 @@
+{
+  "manifest_version": "0.3",
+  "name": "gleaner",
+  "display_name": "Gleaner",
+  "version": "1.0.0",
+  "description": "Your Gleaner task ledger in Claude: list, add, tick off, drop, snooze and edit items, and read your notes.",
+  "long_description": "Connects Claude to Gleaner, the service on your Raspberry Pi that turns handwritten reMarkable notes into a task ledger. The tools call Gleaner's API on the Pi with a token of their own, so the Pi keeps the one record and its change log shows what Claude changed. Needs this computer to reach the Pi: on the home network, or over Tailscale.",
+  "author": { "name": "Matt Herman" },
+  "repository": { "type": "git", "url": "https://github.com/mherman1990/Gleaner.git" },
+  "homepage": "https://github.com/mherman1990/Gleaner",
+  "support": "https://github.com/mherman1990/Gleaner/issues",
+  "server": {
+    "type": "node",
+    "entry_point": "server.mjs",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/server.mjs"],
+      "env": {
+        "GLEANER_URL": "${user_config.gleaner_url}",
+        "GLEANER_TOKEN": "${user_config.gleaner_token}"
+      }
+    }
+  },
+  "tools": [
+    { "name": "list_items", "description": "Items in the ledger: open (default), snoozed, closed or all, optionally one project tag" },
+    { "name": "get_item", "description": "One item by its number" },
+    { "name": "create_item", "description": "Add a task, merged into an open one that is the same task" },
+    { "name": "update_item", "description": "Close, drop, reopen or snooze an item, or edit its text, due date, person or assignee" },
+    { "name": "open_loops", "description": "The open items as Gleaner's markdown summary" },
+    { "name": "get_notes", "description": "Transcribed notes for a day or a range" },
+    { "name": "search_notes", "description": "Pages whose text contains words" },
+    { "name": "list_events", "description": "The ledger's recent changes" }
+  ],
+  "keywords": ["tasks", "remarkable", "notes"],
+  "compatibility": {
+    "platforms": ["darwin", "win32", "linux"],
+    "runtimes": { "node": ">=18.0.0" }
+  },
+  "user_config": {
+    "gleaner_url": {
+      "type": "string",
+      "title": "Gleaner address",
+      "description": "Gleaner on your Pi, e.g. http://umbrel:3717 over Tailscale or http://umbrel.local:3717 at home.",
+      "default": "http://umbrel:3717",
+      "required": true
+    },
+    "gleaner_token": {
+      "type": "string",
+      "title": "Gleaner token",
+      "description": "A token from the Pi: token add claude-home --scopes read,write,create --sensitivity all",
+      "sensitive": true,
+      "required": true
+    }
+  }
+}

@@ -7,3 +7,6 @@ projects.yaml
 projects.yml
 # the saved last good copy of any registry file
 *.last-good*
+
+# the packed Claude Desktop extension (scripts/pack-mcpb.mjs)
+gleaner-mcp/dist/
