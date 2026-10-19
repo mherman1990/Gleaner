@@ -80,6 +80,12 @@ test('pages read before the upgrade are linked to the items their text closes, a
   page.run('pg-e', 5, '[]', 'done 1 and drop 2');
   page.run('pg-f', 6, '[]', '✔️3 (an emoji tick)\n7, 12 → Fri');
   page.run('pg-g', 7, '[]', 'Done today: ✓5, 8 and ❌ 6');
+  // Lines from before the upgrade: item 7 was ticked on its only page; item 21 was closed with a line on two pages.
+  item.run('it_21', 21, 'Fixture task 21', 'done', null, 'handwriting', 'checked on page');
+  const mention = v014.prepare('INSERT INTO item_mentions (item_id, page_id, page_date) VALUES (?, ?, ?)');
+  mention.run('it_g', 'pg-f', '2026-10-17');
+  mention.run('it_21', 'pg-a', '2026-10-16');
+  mention.run('it_21', 'pg-b', '2026-10-17');
   // Items 9-20, and one page per notation form, each closing what its name says.
   for (let c = 9; c <= 20; c++) item.run(`it_${c}`, c, `Fixture task ${c}`, 'done', null, 'handwriting', null);
   const forms = { 'pg-h': ['Done 9', [9]], 'pg-i': ['dropped: 10', [10]], 'pg-j': ['✅ 11 & 12', [11, 12]], 'pg-k': ['13 and 14 ✓', [13, 14]],
@@ -94,6 +100,10 @@ test('pages read before the upgrade are linked to the items their text closes, a
       'pg-f:it_g', 'pg-g:it_e', 'pg-g:it_f', 'pg-g:it_h'], 'every number of a list, emoji marks, and no link from prose (box14, 6 people, Q3 → Q4) or the words Gleaner writes itself');
   assert.ok(v014.prepare('PRAGMA table_info(item_mentions)').all().some((c) => c.name === 'gone_at'), 'mentions can be marked gone');
   assert.equal(v014.prepare('SELECT COUNT(*) AS n FROM item_mentions WHERE gone_at IS NOT NULL').get().n, 0, 'every existing line counts as on its page');
+  assert.deepEqual(v014.prepare('SELECT item_id, page_id, linked_at, mark FROM item_mentions ORDER BY item_id, page_id').all().map((m) => Object.values(m).join(' ')),
+    ['it_21 pg-a 2026-10-16 ', 'it_21 pg-b 2026-10-17 ', 'it_a pg-1 2026-10-16 ', 'it_b pg-1 2026-10-16 ', 'it_g pg-f 2026-10-17 done'],
+    'linked on their page\'s date; the line that closed its item marked, where there\'s only one');
+  assert.equal(v014.prepare('SELECT COUNT(*) AS n FROM item_sources').get().n, 0);
   assert.deepEqual(v014.prepare('SELECT page_id, tag FROM page_tags ORDER BY page_id, tag').all().map((r) => `${r.page_id}:${r.tag}`),
     ['pg-1:45Z', 'pg-1:widget-permits', 'pg-a:orchard']);
   v014.close();

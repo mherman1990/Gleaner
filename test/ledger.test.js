@@ -25,7 +25,7 @@ const apply = (p, r) => applyPageResult(p, r, '2026-10-01');
 const items = () => db.prepare('SELECT * FROM items ORDER BY code').all();
 const byCode = (code) => db.prepare('SELECT * FROM items WHERE code=?').get(code);
 
-beforeEach(() => db.exec('DELETE FROM item_mentions; DELETE FROM items; DELETE FROM pages; DELETE FROM documents; DELETE FROM events; DELETE FROM page_closes; DELETE FROM page_tags;'));
+beforeEach(() => db.exec('DELETE FROM item_mentions; DELETE FROM items; DELETE FROM pages; DELETE FROM documents; DELETE FROM events; DELETE FROM page_closes; DELETE FROM page_tags; DELETE FROM item_sources;'));
 const hoursAgo = (h) => new Date(Date.now() - h * 3600e3).toISOString();
 // Backdate when item `code`'s line left its pages (and its drop, if that dropped it) by `h` hours.
 const leftAgo = (code, h) => {
@@ -33,6 +33,7 @@ const leftAgo = (code, h) => {
   db.prepare('UPDATE item_mentions SET gone_at=? WHERE item_id=? AND gone_at IS NOT NULL').run(hoursAgo(h), id);
   db.prepare(`UPDATE items SET closed_at=? WHERE id=? AND closed_by='erased'`).run(hoursAgo(h), id);
 };
+const sources = () => db.prepare('SELECT i.code AS item, s.code AS source FROM item_sources x JOIN items i ON i.id=x.item_id JOIN items s ON s.id=x.source_id ORDER BY 1, 2').all().map((r) => [r.item, r.source]);
 const statusEvents = (code) => db.prepare(`SELECT client, old, new FROM events WHERE item_code=? AND field='status' ORDER BY id`).all(code).map((e) => `${e.client}:${e.old}->${e.new}`);
 
 test('new items get sequential codes, fields, and a mention', async () => {
@@ -234,13 +235,16 @@ test('a snoozed item\'s line moved to another page stays one item, still snoozed
 });
 
 test('a line moved onto a page that once closed its item by number is moved, not swallowed', async () => {
-  const q = page(), p = page();
-  await apply(q, result([item('Order the invented filters')], { page_date: '2026-10-14' }));
-  await apply(p, result([], { page_date: '2026-10-15', closes: [{ code: 1, action: 'done', snooze_until: null, evidence: '✓1' }] }));
-  setItemStatus(byCode(1).id, 'open', 'ui'); // reopened by hand
-  await apply(q, result([], { page_date: '2026-10-14' })); // cut from q…
-  await apply(p, result([item('Order the invented filters')], { page_date: '2026-10-15' })); // …and pasted on p
-  assert.deepEqual(items().map((i) => [i.code, i.status]), [[1, 'open']]);
+  for (const alongside of [[], [item('Rake the invented yard', { status: 'done' })]]) { // and with a new ticked line there too
+    db.exec('DELETE FROM item_mentions; DELETE FROM items; DELETE FROM page_closes;');
+    const q = page(), p = page();
+    await apply(q, result([item('Order the invented filters')], { page_date: '2026-10-14' }));
+    await apply(p, result([], { page_date: '2026-10-15', closes: [{ code: 1, action: 'done', snooze_until: null, evidence: '✓1' }] }));
+    setItemStatus(byCode(1).id, 'open', 'ui'); // reopened by hand
+    await apply(q, result([], { page_date: '2026-10-14' })); // cut from q…
+    await apply(p, result([item('Order the invented filters'), ...alongside], { page_date: '2026-10-15' })); // …and pasted on p
+    assert.deepEqual(items().map((i) => [i.code, i.status]), [[1, 'open'], ...alongside.map(() => [2, 'done'])]);
+  }
 });
 
 test('a moved line that is ticked closes its item; one erased days ago is a new item', async () => {
@@ -255,7 +259,7 @@ test('a moved line that is ticked closes its item; one erased days ago is a new 
   assert.deepEqual(items().map((i) => [i.code, i.status]), [[1, 'done'], [2, 'dropped'], [3, 'open']], 'written again after that, it\'s new');
 });
 
-test('a task ticked, erased, and written again on its page is a new item, with the old one\'s tags', async () => {
+test('a task ticked, erased, and written again on its page is a new item, written from the old one', async () => {
   const p = page();
   await apply(p, result([item('Call the invented vet', { tags: ['farm'] })]));
   await apply(p, result([item('Call the invented vet', { existing_item_id: byCode(1).id, status: 'done', tags: ['farm'] })]));
@@ -263,7 +267,94 @@ test('a task ticked, erased, and written again on its page is a new item, with t
   await apply(p, result([])); // …and erased to tidy the page
   leftAgo(1, 24 * 5);
   await apply(p, result([item('Call the invented vet', { existing_item_id: byCode(1).id })])); // written again; the model links it
-  assert.deepEqual(items().map((i) => [i.code, i.status, i.tags]), [[1, 'done', '["farm"]'], [2, 'open', '["farm"]']]);
+  assert.deepEqual(items().map((i) => [i.code, i.status, i.tags]), [[1, 'done', '["farm"]'], [2, 'open', '[]']]);
+  assert.deepEqual(sources(), [[2, 1]]);
+});
+
+test('a ticked or struck line erased and written again before the next read is a new item, even linked to the old one', async () => {
+  for (const mark of ['done', 'dropped']) {
+    db.exec('DELETE FROM item_mentions; DELETE FROM items; DELETE FROM item_sources;');
+    const todo = page();
+    const keep = () => item('Keep this line', { existing_item_id: byCode(2).id });
+    await apply(todo, result([item('Pay the invented rent'), item('Keep this line')]));
+    await apply(todo, result([item('Pay the invented rent', { existing_item_id: byCode(1).id, status: mark }), keep()]));
+    // Within one sync: the old line erased and the task written again (or only its tick erased). The prompt lists the
+    // closed item, and the model links the new line to it.
+    await apply(todo, result([item('Pay the invented rent', { existing_item_id: byCode(1).id }), keep()]));
+    assert.deepEqual(items().map((i) => [i.code, i.status]), [[1, mark], [2, 'open'], [3, 'open']], `${mark}: a new open item`);
+    assert.deepEqual(sources(), [[3, 1]]);
+    // Read again, linked to either, it stays item 3.
+    await apply(todo, result([item('Pay the invented rent', { existing_item_id: byCode(3).id }), keep()]));
+    await apply(todo, result([item('Pay the invented rent', { existing_item_id: byCode(1).id }), keep()]));
+    assert.deepEqual(items().map((i) => [i.code, i.status]), [[1, mark], [2, 'open'], [3, 'open']], `${mark}: read again`);
+  }
+});
+
+test('a tick or strike already read isn\'t applied again when a person has reopened the item', async () => {
+  const p = page();
+  await apply(p, result([item('Fix the invented pump', { status: 'done' }), item('Stop the invented leak')]));
+  await apply(p, result([item('Fix the invented pump', { existing_item_id: byCode(1).id, status: 'done' }),
+    item('Stop the invented leak', { existing_item_id: byCode(2).id, status: 'dropped' })]));
+  for (const code of [1, 2]) setItemStatus(byCode(code).id, 'open', 'ui'); // not done after all
+  await apply(p, result([item('Fix the invented pump', { existing_item_id: byCode(1).id, status: 'done' }),
+    item('Stop the invented leak', { existing_item_id: byCode(2).id, status: 'dropped' }), item('Order the invented gasket')]));
+  assert.deepEqual(items().map((i) => [i.code, i.status]), [[1, 'open'], [2, 'open'], [3, 'open']]);
+  assert.deepEqual(statusEvents(1), ['handwriting:open->done', 'ui:done->open']);
+});
+
+test('a close by number is made once: a re-read doesn\'t undo a reopen or a snooze set by hand since', async () => {
+  const p = page(), q = page();
+  await apply(p, result([item('Order the invented seed'), item('Call the invented lab')]));
+  const marks = [{ code: 1, action: 'done', snooze_until: null, evidence: '✓1' }, { code: 2, action: 'snooze', snooze_until: '2026-10-16', evidence: '2 → Fri' }];
+  await apply(q, result([], { closes: marks }));
+  assert.deepEqual(items().map((i) => [i.status, i.snooze_until]), [['done', null], ['snoozed', '2026-10-16']]);
+  setItemStatus(byCode(1).id, 'open', 'ui'); // a misread close, undone by hand
+  // q read again: the marks are still there, and "→ Fri" on a page with no date now reads as next Friday.
+  await apply(q, result([item('Water the invented trees')], { closes: [marks[0], { ...marks[1], snooze_until: '2026-10-23' }] }));
+  assert.deepEqual(items().slice(0, 2).map((i) => [i.status, i.snooze_until]), [['open', null], ['snoozed', '2026-10-16']]);
+  assert.deepEqual(statusEvents(1), ['handwriting:open->done', 'ui:done->open']);
+});
+
+test('a task struck on one page and written again on another is one open item, whichever page is read first', async () => {
+  for (const order of ['struck first', 'written first']) {
+    db.exec('DELETE FROM item_mentions; DELETE FROM items; DELETE FROM item_sources;');
+    const p = page(), q = page();
+    await apply(p, result([item('Book the invented hall'), item('Keep this line')], { page_date: '2026-10-14' }));
+    const struck = () => apply(p, result([item('Book the invented hall', { existing_item_id: byCode(1).id, status: 'dropped' }),
+      item('Keep this line', { existing_item_id: byCode(2).id })], { page_date: '2026-10-14' }));
+    const written = () => apply(q, result([item('Book the invented hall')], { page_date: '2026-10-15' }));
+    if (order === 'struck first') { await struck(); await written(); } else { await written(); await struck(); }
+    await written(); // and q read again
+    const hall = items().filter((i) => i.text === 'Book the invented hall');
+    assert.deepEqual(hall.filter((i) => i.status === 'open').length, 1, `${order}: ${JSON.stringify(hall.map((i) => i.status))}`);
+  }
+});
+
+test('striking a carried task\'s newest line cancels it; striking an older copy ends only that line', async () => {
+  const mon = page(), tue = page();
+  await apply(mon, result([item('Call the invented co-op'), item('Haul the invented bales')], { page_date: '2026-10-13' }));
+  await apply(tue, result([item('Call the invented co-op'), item('Haul the invented bales')], { page_date: '2026-10-14' })); // carried
+  await apply(tue, result([item('Call the invented co-op', { existing_item_id: byCode(1).id, status: 'dropped' }),
+    item('Haul the invented bales', { existing_item_id: byCode(2).id })], { page_date: '2026-10-14' })); // struck on Tuesday
+  await apply(mon, result([item('Call the invented co-op', { existing_item_id: byCode(1).id }),
+    item('Haul the invented bales', { existing_item_id: byCode(2).id, status: 'dropped' })], { page_date: '2026-10-13' })); // Monday's struck as moved on
+  assert.deepEqual(items().map((i) => [i.code, i.status, i.closed_by]), [[1, 'dropped', 'handwriting'], [2, 'open', null]]);
+  assert.ok(db.prepare('SELECT gone_at FROM item_mentions WHERE item_id=? AND page_id=?').get(byCode(2).id, mon.id).gone_at, 'Monday\'s line ended');
+  // Wednesday's line, written and struck before Wednesday was ever read, cancels it too.
+  await apply(page(), result([item('Haul the invented bales', { status: 'dropped' })], { page_date: '2026-10-15' }));
+  assert.equal(byCode(2).status, 'dropped');
+});
+
+test('a struck line that matches no item is nothing', async () => {
+  await apply(page(), result([item('Rent the invented lift', { status: 'dropped' }), item('Rent the invented trailer')]));
+  assert.deepEqual(items().map((i) => [i.text, i.status]), [['Rent the invented trailer', 'open']]);
+});
+
+test('an expired snooze carried onto a page with a ticked line is carried, not copied', async () => {
+  await apply(page(), result([item('Call the invented vet')], { page_date: '2026-10-13' }));
+  setItemStatus(byCode(1).id, 'snoozed', 'handwriting', null, '2000-01-01'); // its snooze is over
+  await apply(page(), result([item('Call the invented vet'), item('Sweep the invented loft', { status: 'done' })], { page_date: '2026-10-15' }));
+  assert.deepEqual(items().map((i) => [i.code, i.status, i.carry_days]), [[1, 'snoozed', 2], [2, 'done', 1]]);
 });
 
 test('an item reopened by hand after its line left its page isn\'t dropped again by the next read of that page', async () => {

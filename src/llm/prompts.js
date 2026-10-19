@@ -31,7 +31,8 @@ HANDWRITING NOTATION (the writer uses these conventions; they are the main signa
     "✓14", "done 14", "14 ✓"   → close item 14 as done
     "x14", "✗14", "drop 14"    → close item 14 as dropped
     "14 → Fri", "snooze 14 Fri" → snooze item 14 until that date
-- A struck-through line = the writer cancelled it; do not create an item for it.
+- A struck-through line = the writer cancelled it. If it reads as an item, return it with status "dropped" (with its
+  existing_item_id when it matches one in "ITEMS PREVIOUSLY EXTRACTED FROM THIS PAGE"), never as an open item.
 `.trim();
 
 /** The static system prompt. It changes only with the registry file, so prompt caching keeps working. */
@@ -56,16 +57,16 @@ ITEM EXTRACTION RULES
   ("I'll send...", "need to call..."). Do NOT turn ordinary notes, facts, or other people's statements into items.
   Fewer, accurate items beat many noisy ones.
 - Exception: when the page text says the notebook is a TASK LIST, every written line that reads as something to do
-  is an item (kind "action" unless the notation says otherwise), even with no box, arrow, or date. Headings, dates,
-  and crossed-out lines are still not items, and a ticked line is an item with status "done". Keep the writer's
-  wording for these; add a verb only when the meaning is unmistakable.
+  is an item (kind "action" unless the notation says otherwise), even with no box, arrow, or date. Headings and
+  dates are still not items; a ticked line is an item with status "done", and a crossed-out one an item with status
+  "dropped". Keep the writer's wording for these; add a verb only when the meaning is unmistakable.
 - Write item text as a short imperative a reader understands out of context:
   "Send Tom the 45Z comment draft" — not "draft".
 - person = the counterpart's name as written, or null. assignee = the name the item is assigned to, or null when the
   writer owns it (the usual case). due = YYYY-MM-DD or null. due_time = HH:MM on a 24-hour clock ("14:00") when a
   time is written for the item, else null. priority = true only with "!".
 - If an item matches one in "ITEMS PREVIOUSLY EXTRACTED FROM THIS PAGE", set existing_item_id to that id so it is
-  updated, not duplicated; otherwise null.
+  updated, not duplicated; otherwise null. Read each line's tick or strike as it is now, whatever the listed status.
 - Use closes[] only for explicit number references ("✓14" etc.) or a checked box on a line matching an open item.
   snooze_until is the YYYY-MM-DD date for a snooze and null otherwise.
 ${r ? REGISTRY_RULES : `- tags: choose from this vocabulary when it fits; otherwise a short new kebab-case tag:
@@ -140,14 +141,14 @@ ${prior}`,
 
 // ---- Cross-page dedupe (Haiku) -------------------------------------------------------------
 export const DEDUPE_SYSTEM = `You match newly extracted to-do items against existing items. NEW items were just read from a page;
-"(ticked)" means the line is ticked off there. Existing items are labelled:
+"(ticked)" means the line is ticked off or struck through there. Existing items are labelled:
 - OPEN: open or snoozed. Any NEW item may match one.
 - ERASED: dropped in the last few hours because their line left their page. Any NEW item may match one: a line erased
   from one page and written on another is the same item, moved.
 - CLOSED: done or dropped items of the same page. Only a ticked NEW item may match one, and a ticked item that could
   be a CLOSED one or an OPEN one is the CLOSED one: that line read again.
-- OTHER: done, dropped or snoozed items of other pages. Only a ticked NEW item may match one, and only when no OPEN or
-  CLOSED item fits.
+- OTHER: done or dropped items whose line just left a page, and snoozed items. Only a ticked NEW item may match one,
+  and only when no OPEN or CLOSED item fits.
 A match means the SAME commitment rewritten (carried forward, moved to another page, reworded, ticked off, or with a
 new date) — not merely the same topic or the same person. Writing a done task again unticked is a new commitment.
 When unsure, do not match. List only the matches: new_ref is the NEW item's label (e.g. "n0"), code the existing

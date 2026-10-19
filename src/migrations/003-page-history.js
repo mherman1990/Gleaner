@@ -4,13 +4,18 @@
 //   names the item without mentioning it.
 // - page_tags: every tag a page has been read with. A re-read that misses a restricted tag, or a restricted page
 //   erased and written over, stays restricted.
-// Both are only added to. And item_mentions.gone_at: when a read found an item's line no longer on that page (erased
-// or moved). The row stays, for the filter; erasing an item drops it only when no page still has its line.
+// - item_sources: an item written from another item's line (the task written again, as a new item), so restricted
+//   work written again stays restricted whatever the registry or the pages say later.
+// All three are only added to. And on item_mentions: gone_at, when a read found the line no longer on that page
+// (erased or moved; the row stays, for the filter, and erasing an item drops it only when no page still has its line);
+// linked_at, when the line was first linked to the page (a struck line older than the item's line on another page is
+// its old copy); and mark, how the line was last read: ticked ("done"), struck ("dropped") or neither (null).
 // For pages read before this migration, page_tags starts from each page's current tags, and page_closes from the
 // close notation in its text: numbers after ✓, x, ✗, done, drop or snooze, or before ✓ or →
 // (one, a list or a range: "✓14, 15", "✓ 14 15", "12 & 14 → Fri", "✓ 12–15"), linked to the items with those
 // numbers (a page that only looks like it closes one is hidden too), and the words a handwriting close quoted as its
-// evidence. A checked box that left no such trace can't be found.
+// evidence. A checked box that left no such trace can't be found. Existing lines count as on their page, linked on
+// its date, and marked as their item when it was closed on its only page by its own line.
 export const id = '003-page-history';
 
 // 14 | 14, 15 | 14 15 | #14 & #15 | 14 and 15 | 14; 15 | 12–15
@@ -51,8 +56,27 @@ CREATE TABLE IF NOT EXISTS page_tags (
   tag TEXT NOT NULL,
   PRIMARY KEY (page_id, tag)
 );
+CREATE TABLE IF NOT EXISTS item_sources (
+  item_id TEXT NOT NULL,
+  source_id TEXT NOT NULL,
+  PRIMARY KEY (item_id, source_id)
+);
 `);
-  if (!db.prepare('PRAGMA table_info(item_mentions)').all().some((c) => c.name === 'gone_at')) db.exec('ALTER TABLE item_mentions ADD COLUMN gone_at TEXT');
+  const cols = new Set(db.prepare('PRAGMA table_info(item_mentions)').all().map((c) => c.name));
+  if (!cols.has('gone_at')) db.exec('ALTER TABLE item_mentions ADD COLUMN gone_at TEXT');
+  if (!cols.has('linked_at')) {
+    db.exec('ALTER TABLE item_mentions ADD COLUMN linked_at TEXT');
+    db.exec('UPDATE item_mentions SET linked_at = page_date');
+  }
+  if (!cols.has('mark')) {
+    db.exec('ALTER TABLE item_mentions ADD COLUMN mark TEXT');
+    // What Gleaner wrote when a line's own tick or strike closed its item. On an item with lines on more than one page,
+    // which line it was isn't known.
+    db.exec(`UPDATE item_mentions SET mark = (SELECT status FROM items WHERE id = item_mentions.item_id)
+      WHERE item_id IN (SELECT id FROM items WHERE status IN ('done', 'dropped') AND closed_by = 'handwriting'
+        AND close_evidence IN ('marked on source page', 'checked on page'))
+      AND (SELECT COUNT(*) FROM item_mentions o WHERE o.item_id = item_mentions.item_id) = 1`);
+  }
   const addTag = db.prepare('INSERT OR IGNORE INTO page_tags (page_id, tag) VALUES (?, ?)');
   const addClose = db.prepare('INSERT OR IGNORE INTO page_closes (page_id, item_id) VALUES (?, ?)');
   const byCode = new Map(db.prepare('SELECT id, code FROM items WHERE code IS NOT NULL').all().map((i) => [i.code, i.id]));

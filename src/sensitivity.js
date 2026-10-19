@@ -14,7 +14,8 @@ export const ALL = Object.freeze({ all: true, page: () => true, item: () => true
  * - A restricted page has, or ever had, a restricted project among its tags (page_tags keeps every read's tags, so a
  *   re-read that misses the tag, or the page erased and written over, doesn't clear it).
  * - A restricted item has, or ever had, a restricted project among its tags (the events keep its tag history), or is
- *   mentioned on a restricted page. Aliases and case variants count, so tags stored before the registry existed are
+ *   mentioned on a restricted page, or was written from a restricted item (item_sources: the task written again as a
+ *   new item, however many times). Aliases and case variants count, so tags stored before the registry existed are
  *   caught too.
  * - A page is hidden whole if it's restricted, or if it mentions, closes or snoozes a restricted item: its text holds
  *   that item's line or names it (an item tagged #mb on a widget page, one carried over from a restricted page, or
@@ -40,11 +41,13 @@ export function visibility(sensitivity, r = currentRegistry()) {
   const hiddenItems = new Set();
   for (const m of mentions) if (restrictedPages.has(m.page_id)) hiddenItems.add(m.item_id);
   const items = db.prepare('SELECT id, code, tags FROM items').all();
-  const hiddenCodes = new Set();
-  for (const i of items) {
-    if (restrictedTags(i.tags) || hadRestrictedTag.has(i.code)) hiddenItems.add(i.id);
-    if (hiddenItems.has(i.id)) hiddenCodes.add(i.code);
+  for (const i of items) if (restrictedTags(i.tags) || hadRestrictedTag.has(i.code)) hiddenItems.add(i.id);
+  const sources = db.prepare('SELECT item_id, source_id FROM item_sources').all();
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const s of sources) if (hiddenItems.has(s.source_id) && !hiddenItems.has(s.item_id)) { hiddenItems.add(s.item_id); grew = true; }
   }
+  const hiddenCodes = new Set(items.filter((i) => hiddenItems.has(i.id)).map((i) => i.code));
   const hiddenPages = new Set(restrictedPages);
   for (const m of [...mentions, ...db.prepare('SELECT item_id, page_id FROM page_closes').all()]) {
     if (hiddenItems.has(m.item_id)) hiddenPages.add(m.page_id);

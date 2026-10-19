@@ -152,7 +152,7 @@ export function router() {
     if (!vis) return;
     const q = `%${req.query.q || ''}%`;
     res.json(db.prepare(`SELECT p.id, p.tags, p.page_date, d.name, p.page_index, p.summary FROM pages p JOIN documents d ON d.id=p.doc_id
-      WHERE p.transcription_md LIKE ? ORDER BY p.page_date DESC`).all(q).filter(vis.page).slice(0, 50)
+      WHERE p.transcription_md LIKE ? AND p.status NOT IN ('blank', 'deleted') ORDER BY p.page_date DESC`).all(q).filter(vis.page).slice(0, 50)
       .map(({ page_date, name, page_index, summary }) => ({ page_date, name, page_index, summary })));
   });
 

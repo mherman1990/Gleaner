@@ -258,7 +258,7 @@ test('a restricted task written again on a normal page, after its line left it, 
   await reread(n, '2026-10-29', ['widget-report'], 'Get the MARKER-LUNA-AGAIN lease signed', [{ text: lease[0].text, existing_item_id: id }]); // no #mb this time
   const copies = db.prepare('SELECT id, status, tags FROM items WHERE text=? ORDER BY code').all(lease[0].text);
   assert.deepEqual(copies.map((c) => c.status), ['dropped', 'open'], 'a new item: the old one was erased long ago');
-  assert.equal(visibility('normal').item(copies[1]), false, 'it keeps the old one\'s restricted tag');
+  assert.equal(visibility('normal').item(copies[1]), false, 'it was written from a restricted item');
   assert.deepEqual(await leaks(), []);
 });
 
@@ -289,6 +289,56 @@ test('a task written again from a restricted one stays hidden, whatever made the
     assert.equal(vis.item(copies[1]), false, `${text}: the new one is hidden`);
   }
   assert.deepEqual(await leaks(), []);
+});
+
+test('a task written again from one restricted only later, or matched to another item, is hidden too', async () => {
+  const old = new Date(Date.now() - 48 * 3600e3).toISOString();
+  const tidy = (id) => { // done, erased from its page, and two days later written again there
+    setItemStatus(id, 'done', 'mayer');
+    db.prepare('UPDATE item_mentions SET gone_at=? WHERE item_id=?').run(old, id);
+  };
+  // Written on page a, carried to b, done and written again on b; a is tagged moonbase only afterwards.
+  const rover = [{ text: 'Price the MARKER-LUNA-LATER rover' }];
+  const a = await page('2026-10-31', ['widget-report'], lines('Rover list', rover), rover);
+  const b = await page('2026-10-31', ['widget-report'], lines('Rover list, carried', rover), rover);
+  const x = idOf(rover[0].text);
+  tidy(x);
+  await applyPageResult(b, { page_date: '2026-10-31', summary: 's', tags: ['widget-report'], transcription_md: 'Price the MARKER-LUNA-LATER rover',
+    legibility: 'high', uncertain_spans: [], closes: [], items: [{ existing_item_id: x, text: rover[0].text, kind: 'action', status: 'open', person: null,
+      assignee: null, due: null, due_time: null, priority: false, tags: [] }] }, '2026-10-31', null); // no registry yet when it's read
+  const y = db.prepare('SELECT id FROM items WHERE text=? AND status=\'open\'').get(rover[0].text);
+  assert.equal(visibility('normal').item(y), true, 'nothing restricted yet');
+  await reread(a, '2026-10-31', ['moonbase'], lines('MARKER-LUNA rover list', rover), [{ ...rover[0], existing_item_id: x }]);
+  assert.equal(visibility('normal').item(y), false, 'hidden once the page it came from is restricted');
+  // A line written again from a restricted item that the dedupe matches to another, visible, open item.
+  const crate = [{ text: 'Send Pat the MARKER-LUNA-S3 crate order', tags: ['mb'] }];
+  const c = await page('2026-11-01', ['widget-report'], lines('Crates', crate), crate);
+  const s3 = idOf(crate[0].text);
+  tidy(s3);
+  const w = await page('2026-11-01', ['orchard'], lines('Orders', [{ text: 'Send Pat the crate order' }]), [{ text: 'Send Pat the crate order' }]);
+  await reread(c, '2026-11-01', ['widget-report'], 'Send Pat the crate order', [{ text: 'Send Pat the crate order', existing_item_id: s3 }]);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM items WHERE text=?').get('Send Pat the crate order').n, 1, 'matched, not copied');
+  const vis = visibility('normal');
+  assert.equal(vis.item({ id: idOf('Send Pat the crate order') }), false, 'the matched item now holds a restricted task\'s line');
+  assert.equal(vis.page(w), false);
+  assert.deepEqual(await leaks(), []);
+});
+
+test('a chain of tasks written again is followed to the end, whatever order its links were recorded in', () => {
+  // c was written from b before b was matched with a line written from the restricted a (a carry: see the test above).
+  const add = db.prepare(`INSERT INTO items (id, code, text, kind, tags, status) VALUES (?, ?, ?, 'action', ?, 'open')`);
+  add.run('it_chain_a', 9101, 'Chain a', '["mb"]');
+  add.run('it_chain_b', 9102, 'Chain b', '[]');
+  add.run('it_chain_c', 9103, 'Chain c', '[]');
+  const link = db.prepare('INSERT INTO item_sources (item_id, source_id) VALUES (?, ?)');
+  link.run('it_chain_c', 'it_chain_b');
+  link.run('it_chain_b', 'it_chain_a');
+  try {
+    const vis = visibility('normal');
+    assert.deepEqual(['a', 'b', 'c'].map((x) => vis.item({ id: `it_chain_${x}` })), [false, false, false]);
+  } finally {
+    db.exec(`DELETE FROM item_sources WHERE item_id LIKE 'it_chain_%'; DELETE FROM items WHERE id LIKE 'it_chain_%';`);
+  }
 });
 
 test('rows written after the judgement are hidden until the next one', () => {

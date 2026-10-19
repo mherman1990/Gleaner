@@ -21,14 +21,18 @@ Read README.md for setup and docs/HANDWRITING.md for the notation the extractor 
     page that renders blank, or is deleted on the tablet (status `deleted`, never read again), counts as every line
     gone (`pageEmptied`). Items whose line left a page in the last 6 hours (`MOVED_WITHIN_HOURS`: the same sync or the
     next) are dedupe candidates: a line cut from one page and pasted on another is the same item, moved (an erased drop
-    reopens). Striking a line through cancels it, as the notation says; it isn't a move. The rules for which item a
-    line is are listed at `applyPageResult`, and the dedupe's labels (OPEN, ERASED, CLOSED, OTHER) at `matchExisting`.
-    A line written again on its page after its item was closed and its line left it, or long after an erased drop, is
-    a new item that keeps the old one's tags and restriction. A close by number, a struck line, or a person dropping
-    it, makes an erased item's drop final. A due date changed on the page, or a time on a dated page, resets the
-    nudges, as a hand edit does. Accepted trade-offs: a line a read missed that comes back over 6 hours later, or after
-    its item was closed meanwhile, is a new item; a moved line whose new page is read before its old one can't match a
-    closed or snoozed item's unticked line.
+    reopens). Striking a line through cancels it, as the notation says; it isn't a move. The model returns a struck
+    line as a "dropped" item, and one that matches no item is nothing; a struck line older than the item's line on
+    another page (`item_mentions.linked_at`) ends only that copy. The rules for which item a line is are listed at
+    `applyPageResult`, and the dedupe's labels (OPEN, ERASED, CLOSED, OTHER) at `matchExisting`. A line written again
+    on its page after its item was closed and its line left it, long after an erased drop, or in place of its ticked
+    or struck line (`item_mentions.mark`: how the line was last read) is a new item, linked to the old one in
+    `item_sources`. A tick, strike or close by number already read isn't applied again, so a person's reopen sticks.
+    A close by number, a struck line, or a person dropping it, makes an erased item's drop final. A due date changed
+    on the page, or a time on a dated page, resets the nudges, as a hand edit does. Accepted trade-offs: a line a
+    read missed that comes back over 6 hours later, or after its item was closed meanwhile, is a new item; a moved
+    line whose new page is read before its old one can't match a closed or snoozed item's unticked line; a tick the
+    model misses on a re-read makes the task a new open item.
   - In task-list notebooks (`notebooks.taskLists`, default `["To do"]`), every written line is an item. Elsewhere
     only the notation or an explicit commitment makes one. The rule is in the cached system prompt, and the
     per-page flag is in the user turn.
@@ -51,10 +55,11 @@ Read README.md for setup and docs/HANDWRITING.md for the notation the extractor 
     `token add|revoke|list`. `GLEANER_API_TOKEN` is client `legacy` through v0.2.x; `/ui-api` is client `ui`.
   - `src/sensitivity.js`: every route that returns content asks `visibility()`. At `normal`, an item whose tags are
     or were restricted (aliases count; history from the events), or mentioned on a page whose tags are or were
-    restricted (`page_tags`), is left out of everything, and so is any page that mentions, closes or snoozes one
-    (`page_closes`). Both tables (migration 003) are only added to, so a re-read never unhides anything; rows another
-    process wrote after the judgement are hidden; with no registry it's a 503. Each GET route reads in one
-    transaction with its `visibility()` call, and `POST /items/:code` checks and writes under one write lock.
+    restricted (`page_tags`), or written from such an item (`item_sources`, followed to the end), is left out of
+    everything, and so is any page that mentions, closes or snoozes one (`page_closes`). These tables (migration 003)
+    are only added to, so a re-read never unhides anything; rows another process wrote after the judgement are
+    hidden; with no registry it's a 503. Each GET route reads in one transaction with its `visibility()` call, and
+    `POST /items/:code` checks and writes under one write lock.
     `applyPageResult` writes a page and its items in one transaction, after the dedupe call. The prompt lists only a
     page's own lines; the items it closed or snoozed (`closedOnPage`) are kept out of it, so the model can't read "✓14"
     back as item 14's line. A ticked line read again without its id is matched in code (same words as a done item of

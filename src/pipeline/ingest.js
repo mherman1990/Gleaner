@@ -40,8 +40,12 @@ async function pullAndRender() {
     for (const p of bundle.pages) {
       const hash = sha256(fs.readFileSync(p.rmPath));
       const row = db.prepare('SELECT rm_hash, transcribed_hash, status FROM pages WHERE id=?').get(p.id);
-      if (row && row.transcribed_hash === hash) continue;           // already transcribed this exact ink
+      // A page back after it was blank or deleted (an undo, or a pull that missed it) is read again, even with the ink
+      // it was last read with: its lines were taken as gone.
+      const back = row?.status === 'blank' || row?.status === 'deleted';
+      if (row && !back && row.transcribed_hash === hash) continue;  // already transcribed this exact ink
       if (row && row.rm_hash === hash && row.status === 'queued') continue; // already in a batch
+      if (row && row.rm_hash === hash && row.status === 'blank') continue;  // still blank
       const tRender = Date.now();
       const r = await renderPage(p);
       log(`rendered ${bundle.name} p${p.index + 1} in ${secs(tRender)}`);
