@@ -5,7 +5,7 @@ import { tempEnv, pushSink } from './helpers.js';
 
 tempEnv('ledger');
 const { db, openItems, editItem, listItems, setItemStatus } = await import('../src/db.js');
-const { applyPageResult, pageEmptied } = await import('../src/pipeline/ledger.js');
+const { applyPageResult, pageEmptied, dropErasedSnoozes } = await import('../src/pipeline/ledger.js');
 const { normTime, fmtTime, localDate, config } = await import('../src/config.js');
 const { reminderSweep } = await import('../src/digest/digest.js');
 
@@ -419,6 +419,19 @@ test('an item whose snooze is over is dropped when its line is erased, like an o
   setItemStatus(byCode(1).id, 'snoozed', 'handwriting', null, '2000-01-01');
   await apply(p, result([]));
   assert.deepEqual([byCode(1).status, byCode(1).closed_by], ['dropped', 'erased']);
+});
+
+test('a snoozed item whose line is erased is dropped when its snooze is over, if no line is left', async () => {
+  const p = page(), q = page();
+  await apply(p, result([item('Call the invented lab'), item('Ship the invented parts'), item('Keep this line')]));
+  await apply(q, result([item('Ship the invented parts')])); // carried: still on q
+  for (const code of [1, 2]) setItemStatus(byCode(code).id, 'snoozed', 'handwriting', null, '2026-10-23');
+  await apply(p, result([item('Keep this line', { existing_item_id: byCode(3).id })])); // both erased from p while snoozed
+  db.prepare(`INSERT INTO items (id, code, text, kind, tags, status, snooze_until) VALUES ('it_api', 99, 'Never on a page', 'action', '[]', 'snoozed', '2026-10-23')`).run();
+  assert.deepEqual(dropErasedSnoozes('2026-10-22'), [], 'not before the snooze is over');
+  assert.deepEqual(dropErasedSnoozes('2026-10-23'), [byCode(1).id]);
+  assert.deepEqual([1, 2, 99].map((c) => [byCode(c).status, byCode(c).closed_by]), [['dropped', 'erased'], ['snoozed', null], ['snoozed', null]],
+    'one with a line on q, and one never on a page, stay');
 });
 
 test('an item a person dropped stays dropped while its line stays on the page, however long', async () => {

@@ -205,6 +205,20 @@ function linesGone(pageId, touched) {
   }
 }
 
+/**
+ * Snoozed items whose last line was erased while they slept: once the snooze is over, they're dropped (as "erased"),
+ * as an open item would have been. Items that were never on a page aren't touched. Returns the items it dropped.
+ */
+export function dropErasedSnoozes(today = localDate()) {
+  return db.transaction(() => {
+    const ids = db.prepare(`SELECT i.id FROM items i WHERE i.status='snoozed' AND i.snooze_until <= ?
+      AND EXISTS (SELECT 1 FROM item_mentions m WHERE m.item_id=i.id)
+      AND NOT EXISTS (SELECT 1 FROM item_mentions m WHERE m.item_id=i.id AND m.gone_at IS NULL)`).all(today).map((r) => r.id);
+    for (const id of ids) setItemStatus(id, 'dropped', 'erased', 'no longer on source page');
+    return ids;
+  }).immediate();
+}
+
 /** A page now blank, or deleted on the tablet: every line on it is gone. Returns the items it dropped. */
 export function pageEmptied(pageId) {
   return db.transaction(() => { const touched = new Set(); linesGone(pageId, touched); return [...touched]; }).immediate();

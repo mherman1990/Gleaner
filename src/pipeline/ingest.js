@@ -4,7 +4,7 @@ import { currentRegistry, registryStatus } from '../registry.js';
 import { db, now, sha256, startRun, endRun, openItems } from '../db.js';
 import { source } from '../adapters/index.js';
 import { renderPage } from './render.js';
-import { applyPageResult, priorItemsForPage, pageEmptied } from './ledger.js';
+import { applyPageResult, priorItemsForPage, pageEmptied, dropErasedSnoozes } from './ledger.js';
 import { structuredParams, callStructured, submitBatch, collectBatch } from '../llm/client.js';
 import { transcribeSystem, openLoopsBlock, RECORD_PAGE_SCHEMA, transcribeUser } from '../llm/prompts.js';
 import { writeDayFiles, writeOpenLoops, mentionDates } from '../output/markdown.js';
@@ -173,7 +173,7 @@ export async function ingest({ mode = 'batch' } = {}) {
     log(`registry ${registry ? `${registry.version} (${registry.projects.length} projects)` : 'none'}${reg.errors ? ` — ${reg.path} rejected: ${reg.errors.join('; ')}` : ''}`);
     const dates = await collectPending(registry);
     const { pulled, emptied } = await pullAndRender();
-    [...mentionDates(emptied.items), ...emptied.dates].filter(Boolean).forEach((d) => dates.add(d));
+    [...mentionDates([...emptied.items, ...dropErasedSnoozes()]), ...emptied.dates].filter(Boolean).forEach((d) => dates.add(d));
     const rows = db.prepare(`SELECT * FROM pages WHERE status IN ('rendered','error') AND png_path IS NOT NULL`).all();
     const loops = openLoopsBlock(openItems());
     let tally = { created: 0, carried: 0, closed: 0, failed: 0 };
