@@ -115,9 +115,24 @@ test('every API mutation writes events attributed to its client, and closed_by i
   assert.deepEqual(since(mark).map((e) => [e.client, e.field, e.new]), [['cli', 'status', 'open'], ['cli', 'due', '2026-10-30']]);
 });
 
+test('an API create writes a "created" event by its client, a merge one event per field it fills, a dry run none', async () => {
+  const mark = lastId();
+  const res = await post('/api/items', mayer, { text: 'Weigh the invented bales', source: 'artifact' });
+  assert.equal(res.status, 201);
+  const { code } = await res.json();
+  const again = await post('/api/items', mayer, { text: 'Weigh the invented bales', due: '2026-11-02' });
+  assert.equal((await again.json()).result, 'merged');
+  assert.deepEqual(since(mark), [
+    { client: 'mayer', item_code: code, field: 'created', old: null, new: 'Weigh the invented bales' },
+    { client: 'mayer', item_code: code, field: 'due', old: null, new: '2026-11-02' }]);
+  const dry = lastId();
+  assert.equal((await post('/api/items?dry_run=1', mayer, { text: 'Stack the invented bales' })).status, 200);
+  assert.equal(lastId(), dry);
+});
+
 test('every route that can change an item is exercised above', () => {
   const posts = router().stack.filter((l) => l.route?.methods.post).map((l) => l.route.path);
-  assert.deepEqual(posts.filter((p) => !['/items/:code', '/ingest', '/digest'].includes(p)), [], 'a new mutating route needs an events test');
+  assert.deepEqual(posts.filter((p) => !['/items/:code', '/items', '/ingest', '/digest'].includes(p)), [], 'a new mutating route needs an events test');
 });
 
 /**

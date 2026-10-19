@@ -8,6 +8,7 @@ import { applyPageResult, priorItemsForPage, pageEmptied, dropErasedSnoozes } fr
 import { structuredParams, callStructured, submitBatch, collectBatch } from '../llm/client.js';
 import { transcribeSystem, openLoopsBlock, RECORD_PAGE_SCHEMA, transcribeUser } from '../llm/prompts.js';
 import { writeDayFiles, writeOpenLoops, mentionDates } from '../output/markdown.js';
+import * as inbox from '../adapters/api-inbox.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (...a) => console.log('[ingest]', ...a);
@@ -172,6 +173,8 @@ export async function ingest({ mode = 'batch' } = {}) {
     const registry = currentRegistry();
     log(`registry ${registry ? `${registry.version} (${registry.projects.length} projects)` : 'none'}${reg.errors ? ` — ${reg.path} rejected: ${reg.errors.join('; ')}` : ''}`);
     const dates = await collectPending(registry);
+    const drained = await inbox.drain(); // API creates that a restart or an outage left unapplied
+    if (drained) log(`applied ${drained} queued API item(s)`);
     const { pulled, emptied } = await pullAndRender();
     [...mentionDates([...emptied.items, ...dropErasedSnoozes()]), ...emptied.dates].filter(Boolean).forEach((d) => dates.add(d));
     const rows = db.prepare(`SELECT * FROM pages WHERE status IN ('rendered','error') AND png_path IS NOT NULL`).all();

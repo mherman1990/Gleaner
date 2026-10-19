@@ -33,6 +33,12 @@ Read README.md for setup and docs/HANDWRITING.md for the notation the extractor 
     read missed that comes back over 6 hours later, or after its item was closed meanwhile, is a new item; a moved
     line whose new page is read before its old one can't match a closed or snoozed item's unticked line; a tick the
     model misses on a re-read makes the task a new open item.
+  - Items have a `source`: `handwriting`, or what an API client named when it created one with `POST /api/items`
+    (`src/adapters/api-inbox.js`, an item-source adapter; requests are rows in `inbox`, retried at the next ingest).
+    A created item goes through the same dedupe as a new line (`upsertCandidate`), against open items only: a match
+    fills the open item's empty fields and adds tags, never its text or hand edits, and never changes its source. One
+    `source` + `source_ref` is one item. Only `handwriting` items are dropped when their line is erased. Page applies
+    and creates take turns (`withLedger`, in-process).
   - In task-list notebooks (`notebooks.taskLists`, default `["To do"]`), every written line is an item. Elsewhere
     only the notation or an explicit commitment makes one. The rule is in the cached system prompt, and the
     per-page flag is in the user turn.
