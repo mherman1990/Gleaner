@@ -1,6 +1,6 @@
 # Gleaner v0.2 — implementation plan
 
-Status: **agreed 2026-10-18** (decisions in §0). Steps 1 and 2 are merged (PRs #9, #10) and released as v0.2.0. Step 3 is merged (#12), and step 7 (#13) comes next, ahead of 4–6: Matt wants a Claude artifact that reads and changes the ledger through the local MCP. Both ship as v0.2.1. · Updated 2026-10-20
+Status: **agreed 2026-10-18** (decisions in §0). Steps 1 and 2 are merged (PRs #9, #10) and released as v0.2.0. Steps 3 and 7 are merged (#12, #13) and released as v0.2.1; the extension and the Gleaner Ledger artifact work on both of Matt's computers. Next: steps 4, 5, 6 and 8. After them comes the project wiki (`docs/WIKI_PLAN.md`, design agreed 2026-10-20). · Updated 2026-10-20
 Implements `docs/INTEGRATIONS_SPEC.md` (the spec) under the rules in the kickoff prompt.
 Baseline: `main` at v0.1.5 (PR #7 merged: *Ingest now* waits for the read). The v0.1.5 tag is yours to push or skip.
 

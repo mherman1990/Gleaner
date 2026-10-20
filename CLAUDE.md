@@ -149,6 +149,10 @@ Verified live on Matt's Pi (v0.1.0, 2026-10-17):
 - v0.1.4 (2026-10-18): the startup migration on the live database, `GLEANER_TABLET_SHEET=false`, and a live sync read
   of 2 changed pages that created 2 items. That read took 5½ minutes end to end, so *Ingest now* must wait for the
   run rather than refresh after a fixed delay. The log now times each page's render and transcription.
+- v0.2.1 (2026-10-20): the `gleaner-1.0.0.mcpb` extension installed in the Claude desktop app on both of Matt's computers
+  (tokens `claude-home`, `claude-work`), and the Gleaner Ledger artifact (`host:` server) lists items, ticks them off
+  (seen in Gleaner's UI) and adds a task through `POST /api/items`. Ticking goes through `POST /api/items/:code`, so
+  Umbrel's `PROXY_AUTH_WHITELIST` lets nested `/api/*` paths through.
 
 Verified against ddvk/rmapi v0.0.35's source:
 - `rmapi -ni -json find /Daily` prints a JSON array of `{id, name, type, version, modifiedClient, parent, tags, …}`.
@@ -176,11 +180,11 @@ Not yet verified, in priority order:
 3. **On the Pi itself.** Render and transcription time per page are in the log (`docker logs herman-gleaner_web_1 | grep
    '\[ingest\]'`). The first live read averaged about 2½ minutes per page; find out which step dominates. Also check
    memory use during a batch.
-4. **Umbrel.** Confirm that `PROXY_AUTH_WHITELIST` lets nested paths like `/api/items/14` through, as it does `/api/status`.
-   Other store apps (e.g. Bazarr) rely on `"/api/*"` for nested APIs, so this should hold.
-5. **Due times and assignees from real pages.** The model reading `2pm` / `@Name` from Matt's handwriting.
+4. **Due times and assignees from real pages.** The model reading `2pm` / `@Name` from Matt's handwriting.
 
 ## Backlog (not v0.1)
+- **Project wiki** (`docs/WIKI_PLAN.md`, design agreed 2026-10-20, built after the v0.2 steps): one cited page per
+  active/watch project, compiled nightly from tagged pages, Haiku-filed untagged pages, and notes Matt gives Claude.
 - Read annotations on the `_Today` PDF by compositing strokes over the rendered PDF page, so ticks on the sheet close items.
 - A remote MCP endpoint so remote (not computer-bound) Cowork tasks can query the ledger.
 - The job lock is in-process. A `docker exec … cli.js ingest` running alongside the service isn't covered by it.
