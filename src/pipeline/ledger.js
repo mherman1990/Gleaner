@@ -390,7 +390,7 @@ async function applyPage(pageRow, result, fallbackDate, r) {
  * - "created": a new open item, with source and source_ref, and no page.
  * dryRun answers "existing", "would_create" or "would_merge", and writes nothing. hidden(): the item ids the dedupe
  * may not match (those the client may not see), worked out once this request has its turn. inboxId: the request's own
- * inbox row, left out of the source_ref lookup.
+ * inbox row, left out of the source_ref lookup and marked done in the same transaction as the item change.
  */
 export function upsertCandidate(raw, { client, source, sourceRef = null, dryRun = false, hidden = () => new Set(), inboxId = null, r = currentRegistry() }) {
   return withLedger(async () => {
@@ -401,14 +401,23 @@ export function upsertCandidate(raw, { client, source, sourceRef = null, dryRun 
         ?? db.prepare(`SELECT i.id, i.code FROM inbox x JOIN items i ON i.code = x.item_code WHERE x.source=? AND x.source_ref=? AND x.status='done'
           AND x.id IS NOT ? ORDER BY x.id LIMIT 1`).get(source, sourceRef, inboxId);
     };
+    // The request's inbox row is done with the change it made, in one transaction: a crash between them can't replay it.
+    const finish = (out) => {
+      if (!dryRun && inboxId !== null) db.prepare(`UPDATE inbox SET status='done', result=?, item_code=?, error=NULL WHERE id=?`).run(out.result, out.code, inboxId);
+      return out;
+    };
     const found = prior();
-    if (found) return { result: 'existing', code: found.code, id: found.id };
+    if (found) return finish({ result: 'existing', code: found.code, id: found.id });
     const match = (await matchExisting([it], hidden(), [], { moves: false })).get(0);
     const target = match && db.prepare('SELECT id, code FROM items WHERE id=?').get(match);
     if (dryRun) return target ? { result: 'would_merge', code: target.code, id: target.id } : { result: 'would_create', code: null, id: null };
     return db.transaction(() => {
+      // Taken over by another process after this one's claim went stale, and finished there: what that made stands.
+      const mine = inboxId === null ? null : db.prepare(`SELECT i.id, i.code, x.result FROM inbox x JOIN items i ON i.code = x.item_code
+        WHERE x.id=? AND x.status='done'`).get(inboxId);
+      if (mine) return { result: mine.result, code: mine.code, id: mine.id };
       const again = prior(); // sent twice at once: the first one made it
-      if (again) return { result: 'existing', code: again.code, id: again.id };
+      if (again) return finish({ result: 'existing', code: again.code, id: again.id });
       const today = localDate();
       const { due, due_time } = dueOf(it, today);
       // The match as it is now: an item closed or snoozed while the dedupe call was out isn't merged into.
@@ -428,7 +437,7 @@ export function upsertCandidate(raw, { client, source, sourceRef = null, dryRun 
           tags: J(tags),
           api_tags: J([...new Set([...P(cur.api_tags), ...it.tags])]),
         }));
-        return { result: 'merged', code: cur.code, id: cur.id };
+        return finish({ result: 'merged', code: cur.code, id: cur.id });
       }
       const id = newId('it');
       const code = nextCode();
@@ -437,7 +446,7 @@ export function upsertCandidate(raw, { client, source, sourceRef = null, dryRun 
         id, code, it.text.trim(), VALID.has(it.kind) ? it.kind : 'action', it.person || null, it.assignee || null,
         due, due_time, it.priority ? 1 : 0, J(it.tags), J(it.tags), 'open', source, sourceRef, today, today);
       recordEvent(client, code, 'created', null, it.text.trim());
-      return { result: 'created', code, id };
+      return finish({ result: 'created', code, id });
     }).immediate();
   });
 }

@@ -77,10 +77,10 @@ const count = (sql, ...a) => db.prepare(sql).get(...a).n;
 const settled = async (inboxId) => {
   for (let i = 0; i < 100; i++) {
     const row = db.prepare('SELECT status FROM inbox WHERE id=?').get(inboxId);
-    if (row.status !== 'pending') return row.status;
+    if (row.status !== 'pending' && row.status !== 'applying') return row.status;
     await new Promise((r) => setTimeout(r, 20));
   }
-  return 'pending';
+  return 'applying';
 };
 
 test('an item created through the API is open, with its fields, source and client', async () => {
@@ -153,6 +153,33 @@ test('a request that outlasts the time budget is queued, then created; one that 
   db.prepare('UPDATE inbox SET at=? WHERE id=?').run(new Date(Date.now() - 8 * 864e5).toISOString(), old.body.inbox_id);
   assert.equal((await inbox.drain()).length, 1, 'tried many times: applied; a week old: left as failed');
   assert.equal(count(`SELECT COUNT(*) AS n FROM items WHERE text='Sweep the invented loft'`), 0);
+});
+
+test('a request another process is applying is left to it, unless its claim is stale; done is written with the item', async () => {
+  // A request the service is applying when a `docker exec … cli.js ingest` drains the inbox: claimed in SQLite, so
+  // the other process (its own empty map of running requests) leaves it alone.
+  garbled = true;
+  let q;
+  try { q = await create({ text: 'Restack shed pallets' }); } finally { garbled = false; }
+  assert.equal(await settled(q.body.inbox_id), 'failed');
+  db.prepare(`UPDATE inbox SET status='applying', claimed_at=? WHERE id=?`).run(new Date().toISOString(), q.body.inbox_id);
+  assert.deepEqual(await inbox.drain(), [], 'claimed by another process just now: not applied here');
+  assert.equal(count(`SELECT COUNT(*) AS n FROM items WHERE text='Restack shed pallets'`), 0);
+  db.prepare(`UPDATE inbox SET claimed_at=? WHERE id=?`).run(new Date(Date.now() - 11 * 60e3).toISOString(), q.body.inbox_id);
+  assert.equal((await inbox.drain()).length, 1, 'a claim from a process that died is taken over');
+  assert.equal(count(`SELECT COUNT(*) AS n FROM items WHERE text='Restack shed pallets'`), 1);
+  // The row is marked done in the same transaction as the item: if marking it fails, no item is left behind to be
+  // made again by the retry.
+  db.exec(`CREATE TEMP TRIGGER inbox_done_fails BEFORE UPDATE OF status ON inbox WHEN NEW.status = 'done'
+    BEGIN SELECT RAISE(ABORT, 'disk full'); END`);
+  let r;
+  try {
+    r = await create({ text: 'Label pickle jars' });
+    assert.equal(await settled(r.body.inbox_id ?? db.prepare('SELECT MAX(id) AS id FROM inbox').get().id), 'failed');
+  } finally { db.exec('DROP TRIGGER inbox_done_fails'); }
+  assert.equal(count(`SELECT COUNT(*) AS n FROM items WHERE text='Label pickle jars'`), 0);
+  assert.equal((await inbox.drain()).length, 1);
+  assert.equal(count(`SELECT COUNT(*) AS n FROM items WHERE text='Label pickle jars'`), 1, 'made once');
 });
 
 test('a dry run writes nothing, and says what would happen', async () => {

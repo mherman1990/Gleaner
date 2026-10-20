@@ -139,7 +139,7 @@ export function router() {
     const out = await Promise.race([done, late]).catch(() => null);
     clearTimeout(timer);
     if (!out) { // still running, or failed: it finishes in the background, or at the next ingest
-      done.then((o) => refreshItemOutputs([o.id]), () => {});
+      done.then((o) => o && refreshItemOutputs([o.id]), () => {});
       return res.status(202).json({ result: 'queued', inbox_id: inboxId });
     }
     if (out.result !== 'existing') refreshItemOutputs([out.id]);

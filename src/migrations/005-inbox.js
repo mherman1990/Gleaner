@@ -1,6 +1,6 @@
-// Items API clients asked to create (POST /api/items), one row per request: pending until applied, then done (with
-// the item it created or merged into) or failed (retried at the next ingest, up to a few times). A request that
-// outlasts the reply's time budget finishes from here. sensitivity is the client's, so a retry still can't merge
+// Items API clients asked to create (POST /api/items), one row per request: pending, then applying (claimed by one
+// process at claimed_at), then done (with the item it created or merged into, in the same transaction as the item)
+// or failed (retried at each ingest for a week). A request that outlasts the reply's time budget finishes from here. sensitivity is the client's, so a retry still can't merge
 // into work the client may not see. See src/adapters/api-inbox.js.
 export const id = '005-inbox';
 
@@ -18,7 +18,8 @@ CREATE TABLE IF NOT EXISTS inbox (
   result TEXT,
   item_code INTEGER,
   error TEXT,
-  attempts INTEGER NOT NULL DEFAULT 0
+  attempts INTEGER NOT NULL DEFAULT 0,
+  claimed_at TEXT
 );
 CREATE INDEX IF NOT EXISTS inbox_status ON inbox(status);
 CREATE INDEX IF NOT EXISTS inbox_source_ref ON inbox(source, source_ref);

@@ -13,6 +13,7 @@ import { upsertCandidate } from '../pipeline/ledger.js';
 import { visibility } from '../sensitivity.js';
 
 const RETRY_DAYS = 7; // an outage of a few days (an API key that ran out of credit) still ends with the item made
+const CLAIM_MINUTES = 10; // a claim this old was a process that died mid-request: another may take it over
 const running = new Map(); // inbox id → its promise, so a drain doesn't apply a request still being applied
 
 /** The item fields a client may send, as upsertCandidate takes them. */
@@ -26,19 +27,25 @@ const hiddenFrom = (sensitivity) => {
   return new Set(db.prepare('SELECT id FROM items').all().filter((i) => !vis.item(i)).map((i) => i.id));
 };
 
+/**
+ * Apply one request. Resolves with the ledger's answer, or null when another process (the service, or a `docker exec
+ * … cli.js ingest`) has claimed it. upsertCandidate marks the row done in the same transaction as the item change, so
+ * a request is never applied twice.
+ */
 function apply(id) {
   if (running.has(id)) return running.get(id);
   const row = db.prepare('SELECT * FROM inbox WHERE id=?').get(id);
   if (!row || row.status === 'done') return Promise.resolve(row && { result: row.result, code: row.item_code });
+  const stale = new Date(Date.now() - CLAIM_MINUTES * 60e3).toISOString();
+  const claimed = db.prepare(`UPDATE inbox SET status='applying', claimed_at=?, attempts=attempts+1 WHERE id=?
+    AND (status IN ('pending', 'failed') OR (status='applying' AND claimed_at < ?))`).run(now(), id, stale).changes;
+  if (!claimed) return Promise.resolve(null);
   const work = (async () => {
-    db.prepare('UPDATE inbox SET attempts=attempts+1 WHERE id=?').run(id);
     try {
-      const out = await upsertCandidate(fields(JSON.parse(row.payload)),
+      return await upsertCandidate(fields(JSON.parse(row.payload)),
         { client: row.client, source: row.source, sourceRef: row.source_ref, inboxId: id, hidden: () => hiddenFrom(row.sensitivity) });
-      db.prepare(`UPDATE inbox SET status='done', result=?, item_code=?, error=NULL WHERE id=?`).run(out.result, out.code, id);
-      return out;
     } catch (e) {
-      db.prepare(`UPDATE inbox SET status='failed', error=? WHERE id=?`).run(String(e.message || e).slice(0, 500), id);
+      db.prepare(`UPDATE inbox SET status='failed', error=? WHERE id=? AND status != 'done'`).run(String(e.message || e).slice(0, 500), id);
       throw e;
     } finally {
       running.delete(id);
@@ -64,11 +71,16 @@ export function preview(payload, { client, sensitivity = 'all', source, sourceRe
   return upsertCandidate(fields(payload), { client, source, sourceRef, dryRun: true, hidden: () => hiddenFrom(sensitivity) });
 }
 
-/** Apply every request still pending or failed from the last RETRY_DAYS. Returns the ids of the items they changed. */
+/**
+ * Apply every request from the last RETRY_DAYS still pending, failed, or claimed by a process that has since died.
+ * Returns the ids of the items they changed.
+ */
 export async function drain() {
   const since = new Date(Date.now() - RETRY_DAYS * 864e5).toISOString();
+  const stale = new Date(Date.now() - CLAIM_MINUTES * 60e3).toISOString();
   const changed = [];
-  for (const { id } of db.prepare(`SELECT id FROM inbox WHERE status IN ('pending', 'failed') AND at >= ? ORDER BY id`).all(since)) {
+  for (const { id } of db.prepare(`SELECT id FROM inbox WHERE at >= ? AND (status IN ('pending', 'failed') OR (status='applying' AND claimed_at < ?))
+    ORDER BY id`).all(since, stale)) {
     try {
       const out = await apply(id);
       if (out?.id && out.result !== 'existing') changed.push(out.id);
