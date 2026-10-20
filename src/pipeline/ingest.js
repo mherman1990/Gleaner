@@ -174,7 +174,8 @@ export async function ingest({ mode = 'batch' } = {}) {
     log(`registry ${registry ? `${registry.version} (${registry.projects.length} projects)` : 'none'}${reg.errors ? ` — ${reg.path} rejected: ${reg.errors.join('; ')}` : ''}`);
     const dates = await collectPending(registry);
     const drained = await inbox.drain(); // API creates that a restart or an outage left unapplied
-    if (drained) log(`applied ${drained} queued API item(s)`);
+    if (drained.length) log(`applied ${drained.length} queued API item(s)`);
+    mentionDates(drained).forEach((d) => dates.add(d)); // the days whose notes show an item a request merged into
     const { pulled, emptied } = await pullAndRender();
     [...mentionDates([...emptied.items, ...dropErasedSnoozes()]), ...emptied.dates].filter(Boolean).forEach((d) => dates.add(d));
     const rows = db.prepare(`SELECT * FROM pages WHERE status IN ('rendered','error') AND png_path IS NOT NULL`).all();

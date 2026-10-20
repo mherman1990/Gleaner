@@ -103,10 +103,10 @@ export function router() {
   // Create an item. Only text is needed: {"text":"Send Jen the budget","due":"2026-10-23","due_time":"14:00",
   // "assignee":"Jen","person":"Jen","tags":["budget"],"priority":true,"kind":"followup","source":"email",
   // "source_ref":"<the source's own id>"}. It's checked against the open loops first: an item already open is filled
-  // in ("merged", 200), not copied, and the same source and source_ref sent again changes nothing ("existing", 200).
-  // Otherwise "created" (201). The answer comes within config.api.createBudgetSeconds, else "queued" (202) and the
-  // item follows in the background (a failure is retried at the next ingest). ?dry_run=1 answers "would_create" or
-  // "would_merge" and writes nothing.
+  // in ("merged", 200), not copied, and the same source and source_ref sent again changes nothing ("existing", 200),
+  // even after that item is closed. Otherwise "created" (201). The answer comes within config.api.createBudgetSeconds,
+  // else "queued" (202) and the item follows in the background (a failure is retried at each ingest for a week).
+  // ?dry_run=1 answers "existing", "would_create" or "would_merge" and writes nothing.
   r.post('/items', can('create'), async (req, res) => {
     const vis = view(req, res);
     if (!vis) return;
@@ -130,7 +130,7 @@ export function router() {
     if (['1', 'true'].includes(String(req.query.dry_run))) {
       try {
         const out = await preview(payload, who);
-        return res.json({ result: out.result, code: out.code });
+        return res.json({ result: out.result, ...(out.code && vis.code(out.code) ? { code: out.code } : {}) });
       } catch (e) { return res.status(502).json({ error: `couldn't check against the open loops: ${e.message}` }); }
     }
     const { id: inboxId, done } = enqueue(payload, who);
@@ -145,8 +145,9 @@ export function router() {
     if (out.result !== 'existing') refreshItemOutputs([out.id]);
     const after = view(req, res);
     if (!after) return;
+    // The item's number only if the client may see the item (one sent before by another client may be restricted).
     const item = itemByCode(out.code, after);
-    res.status(out.result === 'created' ? 201 : 200).json({ result: out.result, code: out.code, ...(item ? { item: itemJson(item, after) } : {}) });
+    res.status(out.result === 'created' ? 201 : 200).json({ result: out.result, ...(item ? { code: out.code, item: itemJson(item, after) } : {}) });
   });
 
   get('/open-loops.md', can('read'), (req, res) => {

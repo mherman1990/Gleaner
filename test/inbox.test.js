@@ -16,8 +16,9 @@ const userText = (params) => {
   return typeof c === 'string' ? c : c.filter((b) => b.type === 'text').map((b) => b.text).join('\n');
 };
 // The fake Haiku matches a new item to the open item whose words overlap it most (over half), as a real model might
-// match a reworded task. delayMs holds its answer back; garbled makes it answer with something that isn't JSON.
-let delayMs = 0, garbled = false;
+// match a reworded task. delayMs holds its answer back; garbled makes it answer with something that isn't JSON;
+// whileDeduping runs once while a call is out (another writer acting meanwhile).
+let delayMs = 0, garbled = false, whileDeduping = null;
 const dedupes = [];
 function dedupe(params) {
   const text = userText(params);
@@ -34,6 +35,7 @@ function dedupe(params) {
 const fake = await fakeAnthropic(async (params, purpose) => {
   if (purpose !== 'dedupe') throw new Error(`unexpected ${purpose} call`);
   if (delayMs) await new Promise((r) => setTimeout(r, delayMs));
+  if (whileDeduping) { const act = whileDeduping; whileDeduping = null; await act(); }
   return garbled ? 'not json' : dedupe(params);
 });
 const dataDir = tempEnv('inbox', { GLEANER_PORT: '0', GLEANER_LLM: 'live', ANTHROPIC_API_KEY: 'test-key', ANTHROPIC_BASE_URL: fake.url });
@@ -42,7 +44,7 @@ fs.copyFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixture
 const { db } = await import('../src/db.js');
 const { config } = await import('../src/config.js');
 const { applyPageResult, dropErasedSnoozes } = await import('../src/pipeline/ledger.js');
-const { setItemStatus } = await import('../src/db.js');
+const { setItemStatus, editItem } = await import('../src/db.js');
 const { startServer } = await import('../src/server.js');
 const { addToken } = await import('../src/auth.js');
 const inbox = await import('../src/adapters/api-inbox.js');
@@ -66,7 +68,7 @@ function page(tags = []) {
   db.prepare('INSERT OR IGNORE INTO documents (id, name) VALUES (?, ?)').run('doc1', 'Field notes');
   db.prepare(`INSERT INTO pages (id, doc_id, page_index, rm_hash, status) VALUES (?,?,?,?, 'rendered')`).run(id, 'doc1', n, `hash${n}`);
   const row = db.prepare('SELECT * FROM pages WHERE id=?').get(id);
-  return { row, read: (items) => applyPageResult(row, { page_date: '2026-10-20', summary: 's', tags, transcription_md: 'md', legibility: 'high',
+  return { row, read: (items, pageTags = tags) => applyPageResult(row, { page_date: '2026-10-20', summary: 's', tags: pageTags, transcription_md: 'md', legibility: 'high',
     uncertain_spans: [], closes: [], items: items.map((i) => ({ existing_item_id: null, kind: 'action', status: 'open', person: null, assignee: null,
       due: null, due_time: null, priority: false, tags: [], ...i })) }, '2026-10-20') };
 }
@@ -140,9 +142,17 @@ test('a request that outlasts the time budget is queued, then created; one that 
     assert.equal(await settled(queued.body.inbox_id), 'failed');
     assert.equal(count(`SELECT COUNT(*) AS n FROM items WHERE text='Mail the invented invoices'`), 0);
   } finally { garbled = false; }
-  assert.equal(await inbox.drain(), 1);
-  assert.equal(count(`SELECT COUNT(*) AS n FROM items WHERE text='Mail the invented invoices'`), 1);
-  assert.equal(await inbox.drain(), 0, 'and only once');
+  const applied = await inbox.drain();
+  assert.deepEqual(applied, [db.prepare(`SELECT id FROM items WHERE text='Mail the invented invoices'`).get().id], 'the items it changed, for their day files');
+  assert.deepEqual(await inbox.drain(), [], 'and only once');
+  // An outage longer than a few ingests: still retried, for a week.
+  garbled = true;
+  try { await create({ text: 'Weigh the invented bales' }); } finally { garbled = false; }
+  db.prepare(`UPDATE inbox SET attempts=9 WHERE status='failed'`).run();
+  const old = await (async () => { garbled = true; try { return await create({ text: 'Sweep the invented loft' }); } finally { garbled = false; } })();
+  db.prepare('UPDATE inbox SET at=? WHERE id=?').run(new Date(Date.now() - 8 * 864e5).toISOString(), old.body.inbox_id);
+  assert.equal((await inbox.drain()).length, 1, 'tried many times: applied; a week old: left as failed');
+  assert.equal(count(`SELECT COUNT(*) AS n FROM items WHERE text='Sweep the invented loft'`), 0);
 });
 
 test('a dry run writes nothing, and says what would happen', async () => {
@@ -177,6 +187,69 @@ test('a client that may not see restricted work creates a new item instead of me
   assert.equal(res.body.result, 'created');
   assert.notEqual(res.body.code, hidden);
   assert.equal(byCode(hidden).tags, '[]', 'the hidden item is untouched');
+});
+
+test('a request merged into an item is that item for good: sent again, even after it is closed, it is "existing"', async () => {
+  const p = page();
+  await p.read([{ text: 'Reply to the invented co-op about pallets' }]);
+  const it = db.prepare(`SELECT * FROM items WHERE text='Reply to the invented co-op about pallets'`).get();
+  const msg = { text: 'Reply to the invented co-op about pallets', source: 'email', source_ref: 'msg-pallets' };
+  assert.deepEqual([(await create(msg)).body.result], ['merged']);
+  const calls = dedupes.length;
+  assert.deepEqual([(await create(msg)).body.result, dedupes.length], ['existing', calls], 'no second dedupe call');
+  setItemStatus(it.id, 'done', 'ui');
+  const again = await create(msg);
+  assert.deepEqual([again.body.result, again.body.code], ['existing', it.code]);
+  assert.equal(count(`SELECT COUNT(*) AS n FROM items WHERE text='Reply to the invented co-op about pallets'`), 1, 'the finished task doesn\'t come back');
+  assert.equal((await create(msg, { query: '?dry_run=1' })).body.result, 'existing');
+});
+
+test('a merge keeps what Matt set or cleared by hand, and its tags survive a re-read of the page', async () => {
+  const p = page();
+  await p.read([{ text: 'Fix the invented gate latch', assignee: 'Pat', due: '2026-10-22' }]);
+  const it = db.prepare(`SELECT * FROM items WHERE text='Fix the invented gate latch'`).get();
+  editItem(it.id, { assignee: null, due: null }, 'ui'); // it's his, with no date
+  const res = await create({ text: 'Fix the invented gate latch', assignee: 'Pat', due: '2026-10-30', tags: ['budget'] });
+  assert.equal(res.body.result, 'merged');
+  const after = byCode(it.code);
+  assert.deepEqual([after.assignee, after.due, after.tags], [null, null, '["budget"]'], 'the hand edits stay; the tag is added');
+  await p.read([{ text: 'Fix the invented gate latch', existing_item_id: it.id }, { text: 'Oil the invented hinge' }]); // more ink: read again
+  assert.equal(byCode(it.code).tags, '["budget"]', 'the line has no tag, but the one a client gave stays');
+  const email = await create({ text: 'Order the invented fence posts', tags: ['wr'], source: 'email' });
+  const q = page();
+  await q.read([{ text: 'Order the invented fence posts', tags: ['bp'] }]); // written down, with a tag of its own
+  assert.equal(byCode(email.body.code).tags, '["bridge-permit","widget-report"]');
+});
+
+test('an item closed while the dedupe call is out isn\'t merged into: the request makes a new item', async () => {
+  const p = page();
+  await p.read([{ text: 'Order the invented pump gaskets' }]);
+  const it = db.prepare(`SELECT * FROM items WHERE text='Order the invented pump gaskets'`).get();
+  whileDeduping = () => setItemStatus(it.id, 'done', 'ui');
+  const res = await create({ text: 'Order the invented pump gaskets' });
+  assert.equal(res.body.result, 'created');
+  assert.deepEqual([byCode(it.code).status, byCode(res.body.code).status], ['done', 'open']);
+});
+
+test('a normal client: what it may not see is judged when its turn comes, and a hidden item\'s number is never returned', async () => {
+  // A page is being read, and makes an open item restricted, while the client's request waits its turn.
+  const p = page();
+  await p.read([{ text: 'Price the invented rover tyres' }]);
+  const it = db.prepare(`SELECT * FROM items WHERE text='Price the invented rover tyres'`).get();
+  delayMs = 300;
+  let reading;
+  try {
+    reading = p.read([{ text: 'Price the invented rover tyres', existing_item_id: it.id }, { text: 'Count the invented crates' }], ['moonbase']);
+    await new Promise((r) => setTimeout(r, 50)); // the page has its turn, and its dedupe call is out
+    const res = await create({ text: 'Price the invented rover tyres' }, { token: cowork });
+    assert.equal(res.body.result, 'created', 'not merged into an item that became restricted while it waited');
+  } finally { delayMs = 0; await reading; }
+  // A source_ref another client used for restricted work: "existing", without the number.
+  const moon = await create({ text: 'Survey the invented crater rim', tags: ['moonbase'], source: 'email', source_ref: 'msg-crater' });
+  const res = await create({ text: 'anything', source: 'email', source_ref: 'msg-crater' }, { token: cowork });
+  assert.deepEqual([res.body.result, 'code' in res.body, 'item' in res.body], ['existing', false, false]);
+  assert.equal((await create({ text: 'anything', source: 'email', source_ref: 'msg-crater' }, { token: cowork, query: '?dry_run=1' })).body.code, undefined);
+  assert.ok(moon.body.code, 'the client that may see it gets its number');
 });
 
 test('bad requests are refused, and creating needs the create scope', async () => {

@@ -131,11 +131,13 @@ once tagged restricted stays hidden after it's erased and written over.
 **Creating items.** `POST /api/items` adds an item for another app: `{"text": "Send Jen the budget", "due": "2026-10-23",
 "tags": ["budget"], "source": "email", "source_ref": "<the email's id>"}`. It's checked against the open loops first, as
 a new handwritten line is: if an open item is the same task, that item gets the new details it lacks (due date, person,
-assignee, tags) and the reply is `merged`; its own text and hand edits stay. Sending the same `source` and `source_ref`
-again changes nothing (`existing`). Otherwise the reply is `created` (201) with the item's number. The answer comes
-within 15 seconds (`api.createBudgetSeconds`), else it's `queued` (202) and the item follows in the background; a
-request that failed is retried at the next ingest. `?dry_run=1` answers `would_create` or `would_merge` and writes
-nothing. `source` defaults to `api`. Items created this way aren't dropped when a line written for them is erased.
+assignee, tags) and the reply is `merged`; its own text, and anything you set or cleared by hand, stay. Tags a client
+gives an item are kept when its page is read again. Sending the same `source` and `source_ref` again changes nothing
+(`existing`), even after that item is closed. Otherwise the reply is `created` (201) with the item's number. The answer
+comes within 15 seconds (`api.createBudgetSeconds`), else it's `queued` (202) and the item follows in the background; a
+request that failed is retried at each ingest for a week. `?dry_run=1` answers `existing`, `would_create` or
+`would_merge` and writes nothing. `source` defaults to `api`. Items created this way aren't dropped when a line written
+for them is erased. A token at sensitivity `normal` never gets the number of an item it can't see.
 
 **Audit trail.** Every change to an item writes a row per changed field to `events`: who (`handwriting`, `erased`,
 `ui`, `cli`, `legacy`, or the token's client), the item, the field, and the old and new values. `closed_by` is the

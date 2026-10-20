@@ -35,10 +35,12 @@ Read README.md for setup and docs/HANDWRITING.md for the notation the extractor 
     model misses on a re-read makes the task a new open item.
   - Items have a `source`: `handwriting`, or what an API client named when it created one with `POST /api/items`
     (`src/adapters/api-inbox.js`, an item-source adapter; requests are rows in `inbox`, retried at the next ingest).
-    A created item goes through the same dedupe as a new line (`upsertCandidate`), against open items only: a match
-    fills the open item's empty fields and adds tags, never its text or hand edits, and never changes its source. One
-    `source` + `source_ref` is one item. Only `handwriting` items are dropped when their line is erased. Page applies
-    and creates take turns (`withLedger`, in-process).
+    A created item goes through the same dedupe as a new line (`upsertCandidate`), against open items only, as they are
+    when the request has its turn: a match fills the open item's empty fields and adds tags, never its text, a field in
+    `edited`, or its source. Tags a client gave are kept in `items.api_tags`, which `refreshItem` adds to the page's.
+    One `source` + `source_ref` is one item: the item they created, or the one they were merged into (from `inbox`),
+    whatever its status. Only `handwriting` items are dropped when their line is erased. Page applies and creates take
+    turns (`withLedger`, in-process); a failed request is retried at each ingest for a week.
   - In task-list notebooks (`notebooks.taskLists`, default `["To do"]`), every written line is an item. Elsewhere
     only the notation or an explicit commitment makes one. The rule is in the cached system prompt, and the
     per-page flag is in the user turn.

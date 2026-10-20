@@ -130,7 +130,7 @@ function refreshItem(id, it, pageDate, r, dated = true, prevMark = null) {
     due,
     due_time: dueTime,
     priority: Math.max(cur.priority, it.priority ? 1 : 0),
-    tags: J(it.tags),
+    tags: J([...new Set([...it.tags, ...P(cur.api_tags)])]), // the page's tags, and any an API client gave it
   }));
   // Ticked or struck on the page; not again for a line read so before, which a person may have reopened since. A
   // struck line also makes final a drop that was only its line leaving a page.
@@ -382,20 +382,28 @@ async function applyPage(pageRow, result, fallbackDate, r) {
 /**
  * An item an API client asked for (src/adapters/api-inbox.js), checked against the open loops like a new handwritten
  * line. Returns { result, code, id }:
- * - "existing": an item from this source with this source_ref already exists (sent before): nothing changes.
- * - "merged": the dedupe matched an open item. Its empty fields (due date and time, person, assignee, kind) are
- *   filled, the new tags are added, and priority only goes up. Its text, source and hand edits stay.
+ * - "existing": this source and source_ref were sent before (an item from them, or one an earlier request with them
+ *   merged into, whatever its status now): nothing changes.
+ * - "merged": the dedupe matched an open item. Its empty fields (due date and time, person, assignee) are filled,
+ *   unless Matt set or cleared them by hand; the new tags are added (and kept across page re-reads, as api_tags);
+ *   priority only goes up. Its text, kind and source stay.
  * - "created": a new open item, with source and source_ref, and no page.
- * dryRun answers "would_create" or "would_merge" and writes nothing. exclude: item ids the dedupe may not match
- * (those the client may not see, so a match can't reveal or change them).
+ * dryRun answers "existing", "would_create" or "would_merge", and writes nothing. hidden(): the item ids the dedupe
+ * may not match (those the client may not see), worked out once this request has its turn. inboxId: the request's own
+ * inbox row, left out of the source_ref lookup.
  */
-export function upsertCandidate(raw, { client, source, sourceRef = null, dryRun = false, exclude = new Set(), r = currentRegistry() }) {
+export function upsertCandidate(raw, { client, source, sourceRef = null, dryRun = false, hidden = () => new Set(), inboxId = null, r = currentRegistry() }) {
   return withLedger(async () => {
     const it = normalize({ kind: 'action', status: 'open', person: null, assignee: null, due: null, due_time: null, priority: false, tags: [], ...raw }, r);
-    const prior = () => (sourceRef === null ? null : db.prepare('SELECT id, code FROM items WHERE source=? AND source_ref=?').get(source, sourceRef));
+    const prior = () => {
+      if (sourceRef === null) return null;
+      return db.prepare('SELECT id, code FROM items WHERE source=? AND source_ref=?').get(source, sourceRef)
+        ?? db.prepare(`SELECT i.id, i.code FROM inbox x JOIN items i ON i.code = x.item_code WHERE x.source=? AND x.source_ref=? AND x.status='done'
+          AND x.id IS NOT ? ORDER BY x.id LIMIT 1`).get(source, sourceRef, inboxId);
+    };
     const found = prior();
     if (found) return { result: 'existing', code: found.code, id: found.id };
-    const match = (await matchExisting([it], exclude, [], { moves: false })).get(0);
+    const match = (await matchExisting([it], hidden(), [], { moves: false })).get(0);
     const target = match && db.prepare('SELECT id, code FROM items WHERE id=?').get(match);
     if (dryRun) return target ? { result: 'would_merge', code: target.code, id: target.id } : { result: 'would_create', code: null, id: null };
     return db.transaction(() => {
@@ -403,27 +411,31 @@ export function upsertCandidate(raw, { client, source, sourceRef = null, dryRun 
       if (again) return { result: 'existing', code: again.code, id: again.id };
       const today = localDate();
       const { due, due_time } = dueOf(it, today);
-      if (target) {
-        const cur = db.prepare('SELECT * FROM items WHERE id=?').get(target.id);
+      // The match as it is now: an item closed or snoozed while the dedupe call was out isn't merged into.
+      const cur = target && db.prepare('SELECT * FROM items WHERE id=?').get(target.id);
+      if (cur && (cur.status === 'open' || (cur.status === 'snoozed' && cur.snooze_until <= today))) {
+        const hand = new Set(P(cur.edited));
+        const handDue = hand.has('due') || hand.has('due_time');
+        const tags = [...new Set([...P(cur.tags), ...it.tags])];
         changeItem(cur.id, client, () => db.prepare(`UPDATE items SET due=@due, due_time=@due_time, person=@person, assignee=@assignee,
-          kind=@kind, priority=@priority, tags=@tags WHERE id=@id`).run({
+          priority=@priority, tags=@tags, api_tags=@api_tags WHERE id=@id`).run({
           id: cur.id,
-          due: cur.due ?? due,
-          due_time: cur.due ? cur.due_time : due_time,
-          person: cur.person ?? (it.person || null),
-          assignee: cur.assignee ?? (it.assignee || null),
-          kind: cur.kind || (VALID.has(it.kind) ? it.kind : 'action'),
+          due: handDue ? cur.due : cur.due ?? due,
+          due_time: handDue || cur.due ? cur.due_time : due_time,
+          person: hand.has('person') ? cur.person : cur.person ?? (it.person || null),
+          assignee: hand.has('assignee') ? cur.assignee : cur.assignee ?? (it.assignee || null),
           priority: Math.max(cur.priority, it.priority ? 1 : 0),
-          tags: J([...new Set([...P(cur.tags), ...it.tags])]),
+          tags: J(tags),
+          api_tags: J([...new Set([...P(cur.api_tags), ...it.tags])]),
         }));
         return { result: 'merged', code: cur.code, id: cur.id };
       }
       const id = newId('it');
       const code = nextCode();
-      db.prepare(`INSERT INTO items (id, code, text, kind, person, assignee, due, due_time, priority, tags, status, source, source_ref,
-        first_seen, last_seen) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      db.prepare(`INSERT INTO items (id, code, text, kind, person, assignee, due, due_time, priority, tags, api_tags, status, source, source_ref,
+        first_seen, last_seen) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
         id, code, it.text.trim(), VALID.has(it.kind) ? it.kind : 'action', it.person || null, it.assignee || null,
-        due, due_time, it.priority ? 1 : 0, J(it.tags), 'open', source, sourceRef, today, today);
+        due, due_time, it.priority ? 1 : 0, J(it.tags), J(it.tags), 'open', source, sourceRef, today, today);
       recordEvent(client, code, 'created', null, it.text.trim());
       return { result: 'created', code, id };
     }).immediate();

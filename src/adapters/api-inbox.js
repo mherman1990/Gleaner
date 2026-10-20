@@ -5,20 +5,21 @@
 //   enqueue(payload, {client, sensitivity, source, sourceRef}) → { id, done }: records the request; done settles
 //                            with the ledger's answer.
 //   preview(payload, …)      → what it would do (dry run), writing nothing.
-//   drain()                  → applies requests still pending or failed (a restart, an outage); run by each ingest.
+//   drain()                  → applies requests still pending or failed (a restart, an outage) for up to a week;
+//                            run by each ingest. Returns the items they changed.
 //   doctor()                 → counts by status, and the last error.
 import { db, now, J } from '../db.js';
 import { upsertCandidate } from '../pipeline/ledger.js';
 import { visibility } from '../sensitivity.js';
 
-const MAX_ATTEMPTS = 3;
+const RETRY_DAYS = 7; // an outage of a few days (an API key that ran out of credit) still ends with the item made
 const running = new Map(); // inbox id → its promise, so a drain doesn't apply a request still being applied
 
 /** The item fields a client may send, as upsertCandidate takes them. */
 const fields = (p) => ({ text: p.text, kind: p.kind, person: p.person, assignee: p.assignee, due: p.due, due_time: p.due_time, priority: p.priority, tags: p.tags });
 
 // For a client that may not see restricted work, the items the dedupe may not match: a match would change a hidden
-// item and tell the client it exists. Judged when the request is applied, against the current registry.
+// item and tell the client it exists. Judged when the request has its turn in the ledger, against the current registry.
 const hiddenFrom = (sensitivity) => {
   if (sensitivity === 'all') return new Set();
   const vis = visibility(sensitivity);
@@ -33,7 +34,7 @@ function apply(id) {
     db.prepare('UPDATE inbox SET attempts=attempts+1 WHERE id=?').run(id);
     try {
       const out = await upsertCandidate(fields(JSON.parse(row.payload)),
-        { client: row.client, source: row.source, sourceRef: row.source_ref, exclude: hiddenFrom(row.sensitivity) });
+        { client: row.client, source: row.source, sourceRef: row.source_ref, inboxId: id, hidden: () => hiddenFrom(row.sensitivity) });
       db.prepare(`UPDATE inbox SET status='done', result=?, item_code=?, error=NULL WHERE id=?`).run(out.result, out.code, id);
       return out;
     } catch (e) {
@@ -60,16 +61,20 @@ export function enqueue(payload, { client, sensitivity = 'all', source, sourceRe
 
 /** What a request would do, with nothing written: "would_create", or "would_merge" with the item's number. */
 export function preview(payload, { client, sensitivity = 'all', source, sourceRef = null }) {
-  return upsertCandidate(fields(payload), { client, source, sourceRef, dryRun: true, exclude: hiddenFrom(sensitivity) });
+  return upsertCandidate(fields(payload), { client, source, sourceRef, dryRun: true, hidden: () => hiddenFrom(sensitivity) });
 }
 
-/** Apply every request still pending or failed (fewer than MAX_ATTEMPTS tries). Returns how many were applied. */
+/** Apply every request still pending or failed from the last RETRY_DAYS. Returns the ids of the items they changed. */
 export async function drain() {
-  let applied = 0;
-  for (const { id } of db.prepare(`SELECT id FROM inbox WHERE status IN ('pending', 'failed') AND attempts < ? ORDER BY id`).all(MAX_ATTEMPTS)) {
-    try { await apply(id); applied++; } catch { /* kept as failed, with its error */ }
+  const since = new Date(Date.now() - RETRY_DAYS * 864e5).toISOString();
+  const changed = [];
+  for (const { id } of db.prepare(`SELECT id FROM inbox WHERE status IN ('pending', 'failed') AND at >= ? ORDER BY id`).all(since)) {
+    try {
+      const out = await apply(id);
+      if (out?.id && out.result !== 'existing') changed.push(out.id);
+    } catch { /* kept as failed, with its error */ }
   }
-  return applied;
+  return changed;
 }
 
 export function doctor() {
