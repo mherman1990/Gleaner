@@ -139,6 +139,11 @@ request that failed is retried at each ingest for a week. `?dry_run=1` answers `
 `would_merge` and writes nothing. `source` defaults to `api`. Items created this way aren't dropped when a line written
 for them is erased. A token at sensitivity `normal` never gets the number of an item it can't see.
 
+**In the Claude app.** `gleaner-mcp/` is an extension for the Claude desktop app: Claude can list, search, add, close,
+snooze and edit your items, and a Claude artifact can show the ledger and change it. It runs on your computer and calls
+this API over Tailscale with that computer's own token. `npm run pack:mcpb` builds it; setup is in
+[gleaner-mcp/README.md](gleaner-mcp/README.md).
+
 **Audit trail.** Every change to an item writes a row per changed field to `events`: who (`handwriting`, `erased`,
 `ui`, `cli`, `legacy`, or the token's client), the item, the field, and the old and new values. `closed_by` is the
 client too. `GET /api/events?since=today|YYYY-MM-DD|<ISO time>&client=mayer` lists them, oldest first (default: the
