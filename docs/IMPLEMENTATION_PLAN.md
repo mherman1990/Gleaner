@@ -1,6 +1,6 @@
 # Gleaner v0.2 — implementation plan
 
-Status: **agreed 2026-10-18** (decisions in §0). Step 1 is merged (PR #9); step 2 is in progress. · Updated 2026-10-18
+Status: **agreed 2026-10-18** (decisions in §0). Steps 1 and 2 are merged (PRs #9, #10) and released as v0.2.0. Step 3 is in progress, and step 7 comes next, ahead of 4–6: Matt wants a Claude artifact that reads and changes the ledger through the local MCP. · Updated 2026-10-19
 Implements `docs/INTEGRATIONS_SPEC.md` (the spec) under the rules in the kickoff prompt.
 Baseline: `main` at v0.1.5 (PR #7 merged: *Ingest now* waits for the read). The v0.1.5 tag is yours to push or skip.
 
@@ -91,7 +91,7 @@ Each step is one PR with the spec §5 acceptance test written as an automated te
 | Area | Changes |
 |---|---|
 | New files | `src/adapters/api-inbox.js`; `src/migrations/004-items-source.js`; `005-inbox.js`; `test/inbox.test.js` |
-| Changed | `src/pipeline/ledger.js` (extract `upsertCandidates`; ledger lock; erase-drop only for handwriting); `src/server.js` (`POST /api/items`, `dry_run`); `src/adapters/bundle.js` (comment on the second adapter kind) |
+| Changed | `src/pipeline/ledger.js` (`upsertCandidate`, sharing the page path's normalize and dedupe rather than restructuring it; ledger lock; erase-drop only for handwriting); `src/server.js` (`POST /api/items`, `dry_run`); `src/adapters/bundle.js` (comment on the second adapter kind) |
 | Tests | The same `source_ref` twice gives one item. Near-duplicate text gives `merged` (fake Haiku match). A forced budget overrun gives `queued`, then the item is created. A dry run writes nothing. An email item later handwritten keeps `source=email` and isn't erase-dropped. |
 
 ### Step 4 — Projects and health endpoints

@@ -13,7 +13,7 @@ import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { config, paths, localDate } from './config.js';
+import { config, paths, localDate, normTime } from './config.js';
 import { db, P, listItems, setItemStatus, editItem, EDITABLE, isDate } from './db.js';
 import { renderOpenLoops, renderDay, dayFilePath, refreshItemOutputs } from './output/markdown.js';
 import { ingest } from './pipeline/ingest.js';
@@ -23,6 +23,7 @@ import { canonicalTag, canonicalTags, unregisteredTags, personAmbiguous, tagKey 
 import { authenticate, apiEnabled, UI_CLIENT } from './auth.js';
 import { visibility, NoRegistryError } from './sensitivity.js';
 import { listEvents, parseSince } from './events.js';
+import { enqueue, preview } from './adapters/api-inbox.js';
 
 const PUBLIC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../public');
 // unregistered_tags and person_ambiguous are worked out against the current registry, so they follow its edits.
@@ -97,6 +98,56 @@ export function router() {
     if (!changed) return;
     refreshItemOutputs([changed.id]);
     res.json(changed.json);
+  });
+
+  // Create an item. Only text is needed: {"text":"Send Jen the budget","due":"2026-10-23","due_time":"14:00",
+  // "assignee":"Jen","person":"Jen","tags":["budget"],"priority":true,"kind":"followup","source":"email",
+  // "source_ref":"<the source's own id>"}. It's checked against the open loops first: an item already open is filled
+  // in ("merged", 200), not copied, and the same source and source_ref sent again changes nothing ("existing", 200),
+  // even after that item is closed. Otherwise "created" (201). The answer comes within config.api.createBudgetSeconds,
+  // else "queued" (202) and the item follows in the background (a failure is retried at each ingest for a week).
+  // ?dry_run=1 answers "existing", "would_create" or "would_merge" and writes nothing.
+  r.post('/items', can('create'), async (req, res) => {
+    const vis = view(req, res);
+    if (!vis) return;
+    const b = req.body || {};
+    const bad = (error) => res.status(400).json({ error });
+    const str = (v, max) => v === undefined || v === null || (typeof v === 'string' && v.trim().length <= max);
+    if (typeof b.text !== 'string' || !b.text.trim() || b.text.trim().length > 300) return bad('text is required, at most 300 characters');
+    if (b.kind !== undefined && !['action', 'followup', 'waiting', 'decision', 'idea', 'question'].includes(b.kind)) return bad('kind must be action|followup|waiting|decision|idea|question');
+    if (!str(b.person, 60) || !str(b.assignee, 60)) return bad('person and assignee are names, at most 60 characters');
+    if (b.due !== undefined && b.due !== null && !isDate(b.due)) return bad('due must be YYYY-MM-DD');
+    if (b.due_time !== undefined && b.due_time !== null && !normTime(b.due_time)) return bad('due_time must be a time like 14:00 or 2pm');
+    if (b.priority !== undefined && typeof b.priority !== 'boolean') return bad('priority must be true or false');
+    if (b.tags !== undefined && !(Array.isArray(b.tags) && b.tags.length <= 10 && b.tags.every((t) => typeof t === 'string' && t.trim() && t.length <= 40))) return bad('tags must be a list of at most 10 short strings');
+    const source = b.source ?? 'api';
+    if (typeof source !== 'string' || !/^[a-z][a-z0-9_-]{0,31}$/.test(source) || source === 'handwriting') return bad('source must be a short lowercase name, not "handwriting"');
+    if (b.source_ref !== undefined && b.source_ref !== null && !(typeof b.source_ref === 'string' && b.source_ref.trim() && b.source_ref.length <= 200)) return bad('source_ref must be a string of at most 200 characters');
+    const payload = { text: b.text.trim(), kind: b.kind, person: b.person?.trim() || null, assignee: b.assignee?.trim() || null, due: b.due || null,
+      due_time: b.due_time || null, priority: !!b.priority, tags: (b.tags || []).map((t) => t.trim()) };
+    const who = { client: req.client.client, sensitivity: req.client.sensitivity, source, sourceRef: b.source_ref ?? null };
+
+    if (['1', 'true'].includes(String(req.query.dry_run))) {
+      try {
+        const out = await preview(payload, who);
+        return res.json({ result: out.result, ...(out.code && vis.code(out.code) ? { code: out.code } : {}) });
+      } catch (e) { return res.status(502).json({ error: `couldn't check against the open loops: ${e.message}` }); }
+    }
+    const { id: inboxId, done } = enqueue(payload, who);
+    let timer;
+    const late = new Promise((resolve) => { timer = setTimeout(() => resolve(null), config.api.createBudgetSeconds * 1000); });
+    const out = await Promise.race([done, late]).catch(() => null);
+    clearTimeout(timer);
+    if (!out) { // still running, or failed: it finishes in the background, or at the next ingest
+      done.then((o) => o && refreshItemOutputs([o.id]), () => {});
+      return res.status(202).json({ result: 'queued', inbox_id: inboxId });
+    }
+    if (out.result !== 'existing') refreshItemOutputs([out.id]);
+    const after = view(req, res);
+    if (!after) return;
+    // The item's number only if the client may see the item (one sent before by another client may be restricted).
+    const item = itemByCode(out.code, after);
+    res.status(out.result === 'created' ? 201 : 200).json({ result: out.result, ...(item ? { code: out.code, item: itemJson(item, after) } : {}) });
   });
 
   get('/open-loops.md', can('read'), (req, res) => {

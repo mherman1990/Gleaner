@@ -6,7 +6,10 @@
 //     creating a duplicate. carry_days is the "you keep carrying this" signal.
 //  4. A line no longer on a page is marked gone there; an open item with no line left on any page is dropped.
 // The rules for which item a line is are at applyPageResult.
-// Every change here is an event by "handwriting" (an item erased from its page: "erased"); see changeItem() in db.js.
+//  5. Items API clients create (upsertCandidate, through src/adapters/api-inbox.js) are checked against the open loops
+//     the same way: a match fills the existing item's empty fields instead of adding a copy.
+// Every change here is an event by "handwriting" (an item erased from its page: "erased"), or by the API client;
+// see changeItem() in db.js.
 import { db, newId, nextCode, J, P, setItemStatus, openItems, changeItem, recordEvent } from '../db.js';
 import { config, normTime, localDate } from '../config.js';
 import { currentRegistry, canonicalTags, resolvePerson, isFirstNameOf } from '../registry.js';
@@ -20,6 +23,15 @@ const isClosed = (status) => status === 'done' || status === 'dropped';
 // same item, moved. Longer, and a task erased when done and written again the next day would be one item for ever.
 export const MOVED_WITHIN_HOURS = 6;
 const movedSince = () => new Date(Date.now() - MOVED_WITHIN_HOURS * 3600e3).toISOString();
+
+// One writer at a time: a page apply and an API create each decide after a dedupe call, so without this one could
+// add an item the other's call never saw. In-process only, like the job lock (src/jobs.js).
+let ledgerQueue = Promise.resolve();
+function withLedger(fn) {
+  const run = ledgerQueue.then(fn, fn);
+  ledgerQueue = run.catch(() => {});
+  return run;
+}
 
 /**
  * The items that have had a line on this page (its mentions, including lines marked gone): the ones the prompt lists
@@ -118,7 +130,7 @@ function refreshItem(id, it, pageDate, r, dated = true, prevMark = null) {
     due,
     due_time: dueTime,
     priority: Math.max(cur.priority, it.priority ? 1 : 0),
-    tags: J(it.tags),
+    tags: J([...new Set([...it.tags, ...P(cur.api_tags)])]), // the page's tags, and any an API client gave it
   }));
   // Ticked or struck on the page; not again for a line read so before, which a person may have reopened since. A
   // struck line also makes final a drop that was only its line leaving a page.
@@ -151,13 +163,13 @@ const erasedDrop = (o) => o.status === 'dropped' && o.closed_by === 'erased';
  * item: writing a done task again is a new commitment. A line the model matched to more than one item takes the
  * first by that order.
  */
-async function matchExisting(candidates, excludeIds, pageItems) {
+async function matchExisting(candidates, excludeIds, pageItems, { moves = true } = {}) {
   const ticked = (c) => isClosed(c.status);
   const anyTicked = candidates.some(ticked);
   const pool = new Map(); // lowest precedence first: a later label for the same item replaces an earlier one
   const put = (o, kind) => { if (kind) pool.set(o.id, { ...o, kind }); };
   if (anyTicked) for (const o of db.prepare(`SELECT * FROM items WHERE status='snoozed'`).all()) put(o, 'OTHER');
-  for (const o of recentlyMoved()) put(o, erasedDrop(o) ? 'ERASED' : !isClosed(o.status) ? 'OPEN' : anyTicked && 'OTHER');
+  if (moves) for (const o of recentlyMoved()) put(o, erasedDrop(o) ? 'ERASED' : !isClosed(o.status) ? 'OPEN' : anyTicked && 'OTHER');
   for (const o of openItems()) put(o, 'OPEN');
   // An item of the page dropped lately because its line left another page is still ERASED: moved here, maybe.
   for (const o of pageItems) put(o, pool.get(o.id)?.kind === 'ERASED' ? 'ERASED' : !isClosed(o.status) ? 'OPEN' : anyTicked && 'CLOSED');
@@ -192,26 +204,28 @@ const liveElsewhere = (itemId, pageId) => db.prepare('SELECT COUNT(*) AS n FROM 
 /**
  * The lines of this page's items that this read didn't find are gone from it: mark each mention gone, and drop (as
  * "erased") an open item, or one whose snooze is over, that has no line left on any page. Only a line that was there
- * until now counts: an item reopened by hand after its line left isn't dropped again by the next read.
+ * until now counts: an item reopened by hand after its line left isn't dropped again by the next read. Only a
+ * handwritten item is dropped: one an API client created (an email's task, later written down) outlives its line.
  */
 function linesGone(pageId, touched) {
   const today = localDate();
-  for (const p of db.prepare(`SELECT i.id, i.status, i.snooze_until FROM items i JOIN item_mentions m ON m.item_id = i.id
+  for (const p of db.prepare(`SELECT i.id, i.status, i.snooze_until, i.source FROM items i JOIN item_mentions m ON m.item_id = i.id
     WHERE m.page_id = ? AND m.gone_at IS NULL`).all(pageId)) {
     if (touched.has(p.id)) continue;
     db.prepare('UPDATE item_mentions SET gone_at=? WHERE item_id=? AND page_id=?').run(new Date().toISOString(), p.id, pageId);
-    const due = p.status === 'open' || (p.status === 'snoozed' && p.snooze_until <= today);
+    const due = p.source === 'handwriting' && (p.status === 'open' || (p.status === 'snoozed' && p.snooze_until <= today));
     if (due && !liveElsewhere(p.id, pageId)) { setItemStatus(p.id, 'dropped', 'erased', 'no longer on source page'); touched.add(p.id); }
   }
 }
 
 /**
  * Snoozed items whose last line was erased while they slept: once the snooze is over, they're dropped (as "erased"),
- * as an open item would have been. Items that were never on a page aren't touched. Returns the items it dropped.
+ * as an open item would have been. Items that were never on a page, or an API client created, aren't touched.
+ * Returns the items it dropped.
  */
 export function dropErasedSnoozes(today = localDate()) {
   return db.transaction(() => {
-    const ids = db.prepare(`SELECT i.id FROM items i WHERE i.status='snoozed' AND i.snooze_until <= ?
+    const ids = db.prepare(`SELECT i.id FROM items i WHERE i.status='snoozed' AND i.snooze_until <= ? AND i.source='handwriting'
       AND EXISTS (SELECT 1 FROM item_mentions m WHERE m.item_id=i.id)
       AND NOT EXISTS (SELECT 1 FROM item_mentions m WHERE m.item_id=i.id AND m.gone_at IS NULL)`).all(today).map((r) => r.id);
     for (const id of ids) setItemStatus(id, 'dropped', 'erased', 'no longer on source page');
@@ -252,7 +266,11 @@ export function pageEmptied(pageId) {
  * A tick or strike already read on a line isn't applied again: a person may have reopened the item since. Nor is a
  * close by number this page already made.
  */
-export async function applyPageResult(pageRow, result, fallbackDate, r = currentRegistry()) {
+export function applyPageResult(pageRow, result, fallbackDate, r = currentRegistry()) {
+  return withLedger(() => applyPage(pageRow, result, fallbackDate, r));
+}
+
+async function applyPage(pageRow, result, fallbackDate, r) {
   const dated = isDate(result.page_date);
   const pageDate = dated ? result.page_date : fallbackDate;
   const items = (result.items || []).filter((raw) => raw?.text?.trim()).map((raw) => normalize(raw, r));
@@ -359,6 +377,78 @@ export async function applyPageResult(pageRow, result, fallbackDate, r = current
 
     return { pageDate, prevDate, created, carried, closed, itemIds: [...touched] };
   }).immediate();
+}
+
+/**
+ * An item an API client asked for (src/adapters/api-inbox.js), checked against the open loops like a new handwritten
+ * line. Returns { result, code, id }:
+ * - "existing": this source and source_ref were sent before (an item from them, or one an earlier request with them
+ *   merged into, whatever its status now): nothing changes.
+ * - "merged": the dedupe matched an open item. Its empty fields (due date and time, person, assignee) are filled,
+ *   unless Matt set or cleared them by hand; the new tags are added (and kept across page re-reads, as api_tags);
+ *   priority only goes up. Its text, kind and source stay.
+ * - "created": a new open item, with source and source_ref, and no page.
+ * dryRun answers "existing", "would_create" or "would_merge", and writes nothing. hidden(): the item ids the dedupe
+ * may not match (those the client may not see), worked out once this request has its turn. inboxId: the request's own
+ * inbox row, left out of the source_ref lookup and marked done in the same transaction as the item change.
+ */
+export function upsertCandidate(raw, { client, source, sourceRef = null, dryRun = false, hidden = () => new Set(), inboxId = null, r = currentRegistry() }) {
+  return withLedger(async () => {
+    const it = normalize({ kind: 'action', status: 'open', person: null, assignee: null, due: null, due_time: null, priority: false, tags: [], ...raw }, r);
+    const prior = () => {
+      if (sourceRef === null) return null;
+      return db.prepare('SELECT id, code FROM items WHERE source=? AND source_ref=?').get(source, sourceRef)
+        ?? db.prepare(`SELECT i.id, i.code FROM inbox x JOIN items i ON i.code = x.item_code WHERE x.source=? AND x.source_ref=? AND x.status='done'
+          AND x.id IS NOT ? ORDER BY x.id LIMIT 1`).get(source, sourceRef, inboxId);
+    };
+    // The request's inbox row is done with the change it made, in one transaction: a crash between them can't replay it.
+    const finish = (out) => {
+      if (!dryRun && inboxId !== null) db.prepare(`UPDATE inbox SET status='done', result=?, item_code=?, error=NULL WHERE id=?`).run(out.result, out.code, inboxId);
+      return out;
+    };
+    const found = prior();
+    if (found) return finish({ result: 'existing', code: found.code, id: found.id });
+    const match = (await matchExisting([it], hidden(), [], { moves: false })).get(0);
+    const target = match && db.prepare('SELECT id, code FROM items WHERE id=?').get(match);
+    if (dryRun) return target ? { result: 'would_merge', code: target.code, id: target.id } : { result: 'would_create', code: null, id: null };
+    return db.transaction(() => {
+      // Taken over by another process after this one's claim went stale, and finished there: what that made stands.
+      const mine = inboxId === null ? null : db.prepare(`SELECT i.id, i.code, x.result FROM inbox x JOIN items i ON i.code = x.item_code
+        WHERE x.id=? AND x.status='done'`).get(inboxId);
+      if (mine) return { result: mine.result, code: mine.code, id: mine.id };
+      const again = prior(); // sent twice at once: the first one made it
+      if (again) return finish({ result: 'existing', code: again.code, id: again.id });
+      const today = localDate();
+      const { due, due_time } = dueOf(it, today);
+      // The match as it is now: an item closed or snoozed while the dedupe call was out isn't merged into.
+      const cur = target && db.prepare('SELECT * FROM items WHERE id=?').get(target.id);
+      if (cur && (cur.status === 'open' || (cur.status === 'snoozed' && cur.snooze_until <= today))) {
+        const hand = new Set(P(cur.edited));
+        const handDue = hand.has('due') || hand.has('due_time');
+        const tags = [...new Set([...P(cur.tags), ...it.tags])];
+        changeItem(cur.id, client, () => db.prepare(`UPDATE items SET due=@due, due_time=@due_time, person=@person, assignee=@assignee,
+          priority=@priority, tags=@tags, api_tags=@api_tags WHERE id=@id`).run({
+          id: cur.id,
+          due: handDue ? cur.due : cur.due ?? due,
+          due_time: handDue || cur.due ? cur.due_time : due_time,
+          person: hand.has('person') ? cur.person : cur.person ?? (it.person || null),
+          assignee: hand.has('assignee') ? cur.assignee : cur.assignee ?? (it.assignee || null),
+          priority: Math.max(cur.priority, it.priority ? 1 : 0),
+          tags: J(tags),
+          api_tags: J([...new Set([...P(cur.api_tags), ...it.tags])]),
+        }));
+        return finish({ result: 'merged', code: cur.code, id: cur.id });
+      }
+      const id = newId('it');
+      const code = nextCode();
+      db.prepare(`INSERT INTO items (id, code, text, kind, person, assignee, due, due_time, priority, tags, api_tags, status, source, source_ref,
+        first_seen, last_seen) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+        id, code, it.text.trim(), VALID.has(it.kind) ? it.kind : 'action', it.person || null, it.assignee || null,
+        due, due_time, it.priority ? 1 : 0, J(it.tags), J(it.tags), 'open', source, sourceRef, today, today);
+      recordEvent(client, code, 'created', null, it.text.trim());
+      return finish({ result: 'created', code, id });
+    }).immediate();
+  });
 }
 
 export const itemTags = (i) => P(i.tags);

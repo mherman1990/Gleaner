@@ -24,6 +24,7 @@ import { morningDigest, reminderSweep, weeklyReview } from './digest/digest.js';
 import { renderOpenLoops, refreshItemOutputs, itemLine } from './output/markdown.js';
 import { parseRegistry, registryStatus } from './registry.js';
 import { addToken, revokeToken, tokenStatus } from './auth.js';
+import { doctor as inboxDoctor } from './adapters/api-inbox.js';
 
 const [cmd, ...args] = process.argv.slice(2);
 const flag = (f) => args.includes(f);
@@ -43,6 +44,7 @@ async function main() {
       out.registry = registryStatus();
       out.tokens = tokenStatus();
       out.source = await source().doctor().catch((e) => ({ error: e.message }));
+      out.inbox = inboxDoctor();
       console.log(JSON.stringify(out, null, 2));
       break;
     }

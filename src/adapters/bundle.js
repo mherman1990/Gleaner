@@ -1,4 +1,7 @@
-// A DocBundle is the one shape every source adapter produces:
+// Two kinds of adapter feed the ledger. Notebook sources (rmapi, ssh, fixture) produce DocBundles, below, through
+// listDocuments() / pull(doc) / upload(pdf, folder) / doctor(). Item sources hand it single items instead: api-inbox.js
+// (POST /api/items) has enqueue() / drain() / doctor(), and both kinds reach the same dedupe in the ledger.
+// A DocBundle is the one shape every notebook source produces:
 //   { id, name, folder, modified, version, pages: [{ id, index, rmPath }] }
 // The on-disk layout is the same whether it came from an .rmdoc zip (cloud) or the tablet's
 // xochitl directory (SSH): <id>.metadata, <id>.content, <id>/<pageId>.rm

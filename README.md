@@ -50,7 +50,7 @@ On the tablet, create a `/Daily` folder and keep daily notebooks in it. See `doc
 | Tablet | Write `✓14` / `x14` / `14 → Fri` on today's page; it's applied that night. `2pm` and `@Jen` on an item line set its time and assignee |
 | Browser | Umbrel → Gleaner: open loops with Done / Snooze / Drop (each with Undo) and Edit (text, due date, time, assigned to); snoozed and recently closed items with Reopen; *Ingest now* |
 | CLI | `node src/cli.js done 14` · `snooze 14 2026-10-23` · `reopen 14` · `due 14 2026-10-23 2pm` · `assign 14 Jen` · `items [snoozed\|closed\|all]` · `digest --push` · `retranscribe "To do"` |
-| Claude | Ask in Cowork. Desktop Commander can `curl` `/api/items`, `/api/notes`, `/api/search?q=`, and `POST /api/items/14 {"status":"done"}` |
+| Claude | Ask in Cowork. Desktop Commander can `curl` `/api/items`, `/api/notes`, `/api/search?q=`, `POST /api/items/14 {"status":"done"}`, and `POST /api/items {"text":"…"}` |
 
 **Edits by hand win.** A field you set in the browser, CLI, or API (text, due date and time, assignee) is never
 overwritten when the page is read again. Fields you haven't touched still follow the page. Items assigned to someone
@@ -97,6 +97,7 @@ for the format. The real file never goes in this repo, which is public; any file
 
 `GET /api/items[?status=open|snoozed|closed|all&tag=45Z]` · `GET /api/items/:code` ·
 `POST /api/items/:code {status: done|dropped|open|snoozed, until, text, due, due_time, person, assignee}` (any of them; `null` clears) ·
+`POST /api/items[?dry_run=1] {text, due, due_time, person, assignee, tags, priority, kind, source, source_ref}` (only `text` is needed) ·
 `GET /api/open-loops.md` · `GET /api/digest/today` · `GET /api/notes[?from&to]` · `GET /api/notes/:date` ·
 `GET /api/search?q=` · `GET /api/events[?since&client]` · `POST /api/ingest {mode: sync|batch}` · `POST /api/digest {push}` ·
 `GET /api/status`
@@ -116,7 +117,7 @@ v0.2.x, as client `legacy` with every scope. With no token at all, `/api` is dis
 | `write` | `POST /api/items/:code` |
 | `ingest` | `POST /api/ingest` |
 | `digest` | `POST /api/digest` |
-| `create` | `POST /api/items` (v0.2 step 3) |
+| `create` | `POST /api/items` |
 
 **Sensitivity.** A token made with `--sensitivity normal` (the default) never gets restricted work back: projects
 marked `sensitivity: restricted` in the registry. An item is left out if any of its tags is, or ever was, restricted,
@@ -126,6 +127,17 @@ the page no longer shows that. Notes are rendered without those pages, and searc
 counts in `status` leave them out too; a close by number keeps its words to itself. The digest covers all work, so it's
 a 403. With no registry loaded nothing can be judged, so these tokens get 503 until one is. Hiding errs wide: a page
 once tagged restricted stays hidden after it's erased and written over.
+
+**Creating items.** `POST /api/items` adds an item for another app: `{"text": "Send Jen the budget", "due": "2026-10-23",
+"tags": ["budget"], "source": "email", "source_ref": "<the email's id>"}`. It's checked against the open loops first, as
+a new handwritten line is: if an open item is the same task, that item gets the new details it lacks (due date, person,
+assignee, tags) and the reply is `merged`; its own text, and anything you set or cleared by hand, stay. Tags a client
+gives an item are kept when its page is read again. Sending the same `source` and `source_ref` again changes nothing
+(`existing`), even after that item is closed. Otherwise the reply is `created` (201) with the item's number. The answer
+comes within 15 seconds (`api.createBudgetSeconds`), else it's `queued` (202) and the item follows in the background; a
+request that failed is retried at each ingest for a week. `?dry_run=1` answers `existing`, `would_create` or
+`would_merge` and writes nothing. `source` defaults to `api`. Items created this way aren't dropped when a line written
+for them is erased. A token at sensitivity `normal` never gets the number of an item it can't see.
 
 **Audit trail.** Every change to an item writes a row per changed field to `events`: who (`handwriting`, `erased`,
 `ui`, `cli`, `legacy`, or the token's client), the item, the field, and the old and new values. `closed_by` is the

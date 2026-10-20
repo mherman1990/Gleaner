@@ -53,6 +53,13 @@ test('a v0.1.4 database takes every migration in place and keeps its rows', () =
   for (const [t, n] of Object.entries(before)) assert.equal(count(t), n, `${t} rows kept`);
   const it = v014.prepare('SELECT * FROM items WHERE code=1').get();
   assert.deepEqual([it.text, it.due_time, it.assignee, it.edited], ['Draft the fixture memo', '14:00', 'Pat', '["due_time","assignee"]']);
+  assert.deepEqual(v014.prepare('SELECT DISTINCT source, source_ref FROM items').all(), [{ source: 'handwriting', source_ref: null }],
+    'every item from before is handwritten');
+  assert.equal(count('inbox'), 0);
+  const add = v014.prepare(`INSERT INTO items (id, code, text, kind, tags, status, source, source_ref) VALUES (?, ?, 'x', 'action', '[]', 'open', 'email', 'm1')`);
+  add.run('it_e1', 901);
+  assert.throws(() => add.run('it_e2', 902), /UNIQUE/, 'one item per source and source_ref');
+  v014.prepare(`DELETE FROM items WHERE id='it_e1'`).run();
   MIGRATIONS[0].up(v014); // the baseline also runs on databases from before the runner, so it must be idempotent
   for (const [t, n] of Object.entries(before)) assert.equal(count(t), n, `${t} rows kept by a second baseline run`);
   v014.close();

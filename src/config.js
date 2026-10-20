@@ -68,6 +68,9 @@ const defaults = {
   registry: { path: path.join(DATA_DIR, 'projects.yaml') },
   // Per-client API tokens (hashes only); see src/auth.js. apiToken is the legacy single token (client "legacy").
   auth: { tokensPath: path.join(DATA_DIR, 'tokens.json') },
+  // POST /api/items waits this long for the item to be applied (the dedupe call included), then answers "queued" and
+  // finishes in the background; a request that failed is retried at the next ingest.
+  api: { createBudgetSeconds: 15 },
   server: { port: 3717, apiToken: '' }, // /api is disabled while there's no token in tokens.json and this is empty
   tags: [
     // Seed vocabulary, used only while no project registry is loaded. Edit in /data/config.json.
