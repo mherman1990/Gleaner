@@ -4,7 +4,7 @@ name: Gleaner
 tagline: Handwritten reMarkable notes become an open-loop task list
 icon: https://raw.githubusercontent.com/mherman1990/spotter-umbrel-store/main/herman-gleaner/icon.svg
 category: productivity
-version: "0.2.0"
+version: "0.2.1"
 port: 3717
 description: >-
   Gleaner reads the notebooks in one folder of your reMarkable (/Daily by
@@ -53,15 +53,11 @@ backupIgnore:
   - data/raw/*
   - data/renders/*
 releaseNotes: >-
-  A projects file (projects.yaml in the data folder) gives tags aliases,
-  maps people's short names to full names, and can mark a project
-  restricted. Each API client now gets its own token and scopes (see the
-  README); a token marked normal never sees restricted projects, and your
-  existing GLEANER_API_TOKEN keeps working. Every change to an item is
-  logged with who made it, and the morning digest says who closed what.
-  Handwriting: a line moved to another page keeps its number, striking a
-  line cancels its task, a done task written again is a new item, a reopen
-  by hand sticks, and a page erased blank or deleted drops its open tasks.
-  Ingest now waits for the read to finish and says what it found.
+  Claude can now add items: an API client with the new create scope sends
+  POST /api/items, which is checked against your open tasks first, so a
+  task already open is filled in rather than added twice, and the same
+  email or message sent again is the same item. The Gleaner extension for
+  the Claude desktop app (gleaner-mcp in the repo) lets Claude list, add,
+  close, snooze and edit your items over Tailscale; see gleaner-mcp/README.md.
 submitter: Matt Herman
 submission: https://github.com/mherman1990/Gleaner

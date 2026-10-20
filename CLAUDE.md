@@ -74,6 +74,10 @@ Read README.md for setup and docs/HANDWRITING.md for the notation the extractor 
     the page) or by the dedupe (done items are offered, labelled CLOSED, to ticked lines only), and a match to an item
     the page closed changes nothing.
     `test/sensitivity.test.js` sweeps every GET route; a new route needs a probe there.
+  - `gleaner-mcp/server.mjs` (v0.2 step 7): the local MCP server the Claude app runs on Matt's computers (packed as
+    a `.mcpb` extension by `npm run pack:mcpb`). One file, no dependencies, stdio JSON-RPC by hand; each tool calls
+    the `/api` with that computer's token. It isn't in the Docker image. A new API action gets its tool there, and in
+    `manifest.json`'s tool list (`test/mcp.test.js` checks both).
   - Every item write goes through `changeItem()` / `recordEvent()` in `src/db.js`, which write the `events` rows
     with the client; `editItem()` and `setItemStatus()` require one. `src/events.js` reads them (`/api/events`, the
     digest's "Mayer closed 3" line). A new mutating route needs an events test (`test/events.test.js` checks).

@@ -87,3 +87,29 @@ After upgrading to the release with step 2. Each client gets its own token: who 
    token file on your PC to `.gleaner-token.legacy`.
 
 To revoke a token (lost, or a client retired): `node src/cli.js token revoke <client>`. It takes effect at once.
+
+---
+
+## Step 7 — Gleaner in the Claude app (local MCP)
+
+Do this on each computer (your own laptop and the ISA one), with a token for each, so the change log tells them apart.
+Both need Tailscale on to reach the Pi away from home. The details and troubleshooting are in `gleaner-mcp/README.md`.
+
+1. **A token per computer**, on the Pi:
+   ```
+   sudo docker exec herman-gleaner_web_1 node src/cli.js token add claude-home --scopes read,write,create --sensitivity all
+   sudo docker exec herman-gleaner_web_1 node src/cli.js token add claude-work --scopes read,write,create --sensitivity all
+   ```
+   Each prints its token once.
+2. **Install the extension** (`gleaner-1.0.0.mcpb`) in the Claude app: double-click it, or drag it onto
+   **Settings → Extensions**. Its settings ask for:
+   - the **Gleaner address**: `http://umbrel:3717`, the Pi's Tailscale name. Use whatever opens Gleaner in this
+     computer's browser, with `:3717`.
+   - the **Gleaner token**: that computer's token from step 1.
+3. **Check it:** in a new chat, ask "What's open on my Gleaner list?" Claude should list your items. Then tick one
+   off from the chat ("mark 14 done") and see it close in Gleaner's browser page, as `claude-home`.
+4. **The artifact:** once the extension works, Claude publishes the Gleaner artifact. Open it in the Claude app; the
+   first change it makes may ask you to allow the extension's tools.
+
+To stop a computer's access, revoke its token (`token revoke claude-work`). Uninstalling the extension removes it
+from that computer.
