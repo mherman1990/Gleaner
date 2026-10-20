@@ -8,7 +8,7 @@
 // dependencies and runs on any Node 18+. Anything else goes to stderr.
 import readline from 'node:readline';
 
-export const VERSION = '1.0.0';
+export const VERSION = '1.1.0';
 const PROTOCOLS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05']; // newest first
 const ITEM_FIELDS = ['code', 'text', 'kind', 'status', 'due', 'due_time', 'person', 'assignee', 'tags', 'priority', 'carry_days',
   'snooze_until', 'closed_at', 'closed_by', 'source', 'first_seen', 'last_seen'];
@@ -167,6 +167,42 @@ export const TOOLS = [
     run: async ({ q }) => ({ pages: (await api('GET', `/api/search${query({ q })}`)).body }),
   },
   {
+    name: 'list_projects',
+    title: 'List projects',
+    description: 'Matt\'s projects from his registry (projects.yaml): tag, name, aliases, program, status, people, and for each the '
+      + 'count of open items, items waiting on others, overdue items, the most days an open item has been carried, and the date of '
+      + 'its last activity. Also the tags he has written that the registry doesn\'t cover yet (unregistered).',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    annotations: READ,
+    run: async () => (await api('GET', '/api/projects')).body,
+  },
+  {
+    name: 'get_project',
+    title: 'Get a project',
+    description: 'One project by its tag or an alias, as a briefing: its open items by kind, items waiting on others, decisions from '
+      + 'the last 90 days, open questions, the summaries of pages written about it in the last `days` days (default 30), and the '
+      + 'items closed in that time. Use it before a meeting or when Matt asks where a project stands.',
+    inputSchema: { type: 'object', properties: {
+      tag: { type: 'string', description: 'The project\'s tag or one of its aliases.' },
+      days: { type: 'integer', minimum: 1, description: 'How many days back the pages and closes go (1–365). Default: 30.' },
+    }, required: ['tag'], additionalProperties: false },
+    annotations: READ,
+    run: async ({ tag, days }) => {
+      const p = (await api('GET', `/api/projects/${encodeURIComponent(tag)}${query({ days })}`)).body;
+      return { ...p, open: Object.fromEntries(Object.entries(p.open).map(([k, v]) => [k, v.map(slim)])),
+        waiting: p.waiting.map(slim), decisions: p.decisions.map(slim), questions: p.questions.map(slim), closed: p.closed.map(slim) };
+    },
+  },
+  {
+    name: 'get_health',
+    title: 'Gleaner health',
+    description: 'Whether Gleaner on the Pi is working: active alerts, when each job (nightly batch, daytime sync, morning digest) last '
+      + 'succeeded, the tablet sign-in, pages waiting to be read, API spend for the last day and month, memory and disk.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    annotations: READ,
+    run: async () => (await api('GET', '/api/health')).body,
+  },
+  {
     name: 'list_events',
     title: 'Recent changes',
     description: 'The ledger\'s change log, oldest first: who changed which item and how (handwriting, the browser, this token, …). '
@@ -182,7 +218,8 @@ export const TOOLS = [
 
 const INSTRUCTIONS = 'Gleaner keeps Matt\'s task ledger, read from his handwritten reMarkable notes and added to by other apps. '
   + 'Items are referred to by their number (code), as printed on his Today sheet. Read with list_items, get_item, open_loops, '
-  + 'get_notes and search_notes; change with update_item (done, dropped, open, snoozed, edits) and create_item. Every change '
+  + 'get_notes and search_notes; for where a project stands, list_projects and get_project; for whether Gleaner itself is '
+  + 'working, get_health. Change with update_item (done, dropped, open, snoozed, edits) and create_item. Every change '
   + 'is recorded under this connection\'s client name.';
 
 /** Check arguments against a tool's schema, as far as these schemas go. Returns the first problem, or null. */

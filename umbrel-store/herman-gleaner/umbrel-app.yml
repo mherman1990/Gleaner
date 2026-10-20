@@ -4,7 +4,7 @@ name: Gleaner
 tagline: Handwritten reMarkable notes become an open-loop task list
 icon: https://raw.githubusercontent.com/mherman1990/spotter-umbrel-store/main/herman-gleaner/icon.svg
 category: productivity
-version: "0.2.1"
+version: "0.2.2"
 port: 3717
 description: >-
   Gleaner reads the notebooks in one folder of your reMarkable (/Daily by
@@ -53,11 +53,14 @@ backupIgnore:
   - data/raw/*
   - data/renders/*
 releaseNotes: >-
-  Claude can now add items: an API client with the new create scope sends
-  POST /api/items, which is checked against your open tasks first, so a
-  task already open is filled in rather than added twice, and the same
-  email or message sent again is the same item. The Gleaner extension for
-  the Claude desktop app (gleaner-mcp in the repo) lets Claude list, add,
-  close, snooze and edit your items over Tailscale; see gleaner-mcp/README.md.
+  Projects and health. /api/projects lists your projects from projects.yaml
+  with open, waiting and overdue counts, and /api/projects/<tag> briefs you
+  on one: open items, decisions, questions, recent pages and what closed.
+  /api/health shows when each job last succeeded, the tablet sign-in, pages
+  waiting, API spend, memory and disk. Every 15 minutes from 6am to 10pm a
+  check alerts you (at most once every 6 hours per problem) when last
+  night's batch didn't finish, the sign-in fails, two runs fail, memory or
+  disk runs low, or spend spikes. The Claude extension 1.1.0 adds
+  list_projects, get_project and get_health.
 submitter: Matt Herman
 submission: https://github.com/mherman1990/Gleaner

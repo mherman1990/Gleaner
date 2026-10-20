@@ -78,6 +78,14 @@ Read README.md for setup and docs/HANDWRITING.md for the notation the extractor 
     a `.mcpb` extension by `npm run pack:mcpb`). One file, no dependencies, stdio JSON-RPC by hand; each tool calls
     the `/api` with that computer's token. It isn't in the Docker image. A new API action gets its tool there, and in
     `manifest.json`'s tool list (`test/mcp.test.js` checks both).
+  - Projects and health (v0.2 step 4), no LLM. `src/projects.js`: `/api/projects` (registry + open, waiting, overdue,
+    carried_max, last_activity; `unregistered` tags) and `/api/projects/:tag?days=30`. A page belongs to a project by
+    its tags; an item by its own project tags, or with none, by the tags of the pages it's on. `src/health.js`:
+    `/api/health`, and `healthCheck` every 15 minutes 6:07–21:52 (`healthCheckJob` guards 6:00–22:00; the sign-in isn't
+    checked while `busy()`, as two rmapi processes can both rewrite its config) that alerts through
+    `notify()` on batch_late, source_auth (adapter `authCheck()`), runs_failed, memory, disk and spend (priced from
+    `config.prices`). State is the `alerts` table (migration 006): at most once per condition per
+    `health.alertEveryHours`, and only a send a channel accepted counts. At normal, health gives no detail text.
   - Every item write goes through `changeItem()` / `recordEvent()` in `src/db.js`, which write the `events` rows
     with the client; `editItem()` and `setItemStatus()` require one. `src/events.js` reads them (`/api/events`, the
     digest's "Mayer closed 3" line). A new mutating route needs an events test (`test/events.test.js` checks).

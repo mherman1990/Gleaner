@@ -15,7 +15,8 @@ import { tempEnv } from './helpers.js';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SERVER = path.join(ROOT, 'gleaner-mcp', 'server.mjs');
-tempEnv('mcp', { GLEANER_PORT: '0' });
+const dataDir = tempEnv('mcp', { GLEANER_PORT: '0' });
+fs.copyFileSync(path.join(ROOT, 'test', 'fixtures', 'registry.yaml'), path.join(dataDir, 'projects.yaml'));
 const { db } = await import('../src/db.js');
 const { startServer } = await import('../src/server.js');
 const { addToken } = await import('../src/auth.js');
@@ -63,7 +64,8 @@ test('initialize, then tools/list: one tool per ledger action, each with a JSON 
   assert.equal(newer.protocolVersion, '2025-11-25', 'an unknown version gets the newest this server speaks');
 
   const { tools } = (await client.rpc('tools/list')).result;
-  assert.deepEqual(tools.map((t) => t.name), ['list_items', 'get_item', 'create_item', 'update_item', 'open_loops', 'get_notes', 'search_notes', 'list_events']);
+  assert.deepEqual(tools.map((t) => t.name), ['list_items', 'get_item', 'create_item', 'update_item', 'open_loops', 'get_notes', 'search_notes',
+    'list_projects', 'get_project', 'get_health', 'list_events']);
   for (const t of tools) {
     assert.equal(t.inputSchema.type, 'object', t.name);
     assert.equal(typeof t.description, 'string');
@@ -102,6 +104,21 @@ test('the read tools: open loops, notes and search', async () => {
   assert.match(payload(await client.call('open_loops', {})).markdown, /Book the invented hall|open/i);
   assert.deepEqual(payload(await client.call('get_notes', { date: '2001-01-01' })), { markdown: '', note: 'No notes for that day.' });
   assert.ok(Array.isArray(payload(await client.call('search_notes', { q: 'invented' })).pages));
+});
+
+test('projects and health: the registry with counts, one project\'s briefing, and whether Gleaner is working', async () => {
+  const made = payload(await client.call('create_item', { text: 'Weigh the invented widgets', tags: ['wr'], kind: 'question' }));
+  const projects = payload(await client.call('list_projects', {}));
+  assert.deepEqual(projects.projects.map((p) => p.tag), ['widget-report', 'bridge-permit', 'moonbase', 'orchard']);
+  assert.equal(projects.projects[0].open, 1);
+  const p = payload(await client.call('get_project', { tag: 'gizmo', days: 7 }));
+  assert.deepEqual([p.project.tag, p.days, p.questions.map((i) => i.code)], ['widget-report', 7, [made.code]]);
+  assert.deepEqual(Object.keys(p.open.question[0]).sort(), Object.keys(p.questions[0]).sort(), 'items come slimmed');
+  const h = payload(await client.call('get_health', {}));
+  assert.deepEqual([typeof h.ok, h.source.adapter], ['boolean', 'fixture']);
+  const missing = await client.call('get_project', { tag: 'nothing-here' });
+  assert.equal(missing.isError, true);
+  assert.match(missing.content[0].text, /Not found.*no such project/);
 });
 
 test('errors come back as results Claude can show', async () => {

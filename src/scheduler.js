@@ -3,6 +3,7 @@ import { config } from './config.js';
 import { ingest } from './pipeline/ingest.js';
 import { morningDigest, reminderSweep, weeklyReview } from './digest/digest.js';
 import { exclusive } from './jobs.js';
+import { healthCheckJob } from './health.js';
 
 export const jobs = {
   ingestNightly: () => exclusive('ingest:batch', () => ingest({ mode: 'batch' })),
@@ -11,6 +12,7 @@ export const jobs = {
   morningDigest: () => morningDigest({ push: true }),
   reminderSweep: () => reminderSweep(),
   weeklyReview: () => weeklyReview({ push: true }),
+  healthCheck: () => healthCheckJob(),
 };
 
 export function startScheduler() {

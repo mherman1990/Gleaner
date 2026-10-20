@@ -11,6 +11,8 @@ const dir = () => path.resolve(config.source.fixtureDir);
 
 export async function doctor() { return { adapter: name, dir: dir(), documents: (await listDocuments()).length }; }
 
+export async function authCheck() { return { ok: true, detail: 'no tablet to sign in to' }; }
+
 export async function listDocuments() {
   if (!fs.existsSync(dir())) return [];
   return fs.readdirSync(dir(), { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => {

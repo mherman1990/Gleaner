@@ -44,12 +44,34 @@ const defaults = {
     morningDigest: '30 6 * * 1-5',       // 6:30am weekdays — digest + Today sheet + push
     reminderSweep: '*/30 7-18 * * 1-5',  // due/overdue nudges during working hours
     weeklyReview: '0 18 * * 0',          // Sunday 6pm
+    healthCheck: '7-59/15 6-21 * * *',   // every 15 min, 6:07am–9:52pm, off the minutes the jobs above start; no LLM
   },
   reminders: {
     staleDays: 7,     // open loop with no mention in N days → called out in weekly review
     carryFlagAt: 3,   // rewritten on N separate days → "you keep carrying this"
     maxNudgesPerItem: 3,
     leadMinutes: 30,  // an item due at a time is nudged on the first sweep within this many minutes of it
+  },
+  // The health check (src/health.js): an alert when a limit is crossed, at most once per condition per alertEveryHours.
+  health: {
+    memAvailableMinMB: 400, // /proc/meminfo MemAvailable under this
+    swapMaxPct: 50,         // or swap more than this full
+    diskMinGB: 2,           // free space on the data folder under this
+    spendFactor: 3,         // 24 h spend over this × the 30-day daily average…
+    spendFloorUsd: 0.25,    // …and over this, so a quiet first week doesn't alert on cents
+    alertEveryHours: 6,
+  },
+  // US dollars per million tokens, for /api/health and the spend check. A model id is matched by its start, so a dated
+  // id gets its family's price; an unknown model is priced as the dearest one listed. Cache writes cost
+  // cacheWriteFactor × input, and Batch API calls batchFactor × the rest.
+  prices: {
+    models: {
+      'claude-sonnet-5-5': { input: 2, output: 10, cacheRead: 0.2 },
+      'claude-haiku-5-5': { input: 0.1, output: 0.5, cacheRead: 0.01 },
+      'claude-opus-5-5': { input: 4, output: 20, cacheRead: 0.2 },
+    },
+    cacheWriteFactor: 1.25,
+    batchFactor: 0.5,
   },
   notify: {
     teamsWebhookUrl: '',        // Power Automate "When a Teams webhook request is received"

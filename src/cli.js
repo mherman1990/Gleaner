@@ -4,6 +4,7 @@
 //   ingest [--sync]   pull/transcribe now (default: batch)
 //   digest [--push]   build the morning digest (and push Today sheet / notifications with --push)
 //   remind            run the reminder sweep once
+//   health [--check]  what /api/health shows; --check also runs the health check now (alerts any condition that's due)
 //   weekly [--push]   build the weekly review
 //   items [snoozed|closed|all]   print open loops (or the others, with their numbers)
 //   retranscribe all | YYYY-MM-DD | "<notebook>"   read those pages again now (after a prompt/model change)
@@ -25,6 +26,8 @@ import { renderOpenLoops, refreshItemOutputs, itemLine } from './output/markdown
 import { parseRegistry, registryStatus } from './registry.js';
 import { addToken, revokeToken, tokenStatus } from './auth.js';
 import { doctor as inboxDoctor } from './adapters/api-inbox.js';
+import { checkHealth, healthReport } from './health.js';
+import { ALL } from './sensitivity.js';
 
 const [cmd, ...args] = process.argv.slice(2);
 const flag = (f) => args.includes(f);
@@ -51,6 +54,11 @@ async function main() {
     case 'ingest': console.log(await ingest({ mode: flag('--sync') ? 'sync' : 'batch' })); break;
     case 'digest': console.log((await morningDigest({ push: flag('--push') })).md); break;
     case 'remind': console.log(await reminderSweep()); break;
+    case 'health': {
+      if (flag('--check')) console.log(JSON.stringify(await checkHealth(), null, 2));
+      console.log(JSON.stringify(healthReport(ALL), null, 2));
+      break;
+    }
     case 'weekly': console.log((await weeklyReview({ push: flag('--push') })).md); break;
     case 'items': {
       if (!args[0] || args[0] === 'open') { console.log(renderOpenLoops()); break; }
@@ -117,7 +125,7 @@ async function main() {
       break;
     }
     default:
-      console.log('usage: gleaner doctor | ingest [--sync] | digest [--push] | remind | weekly [--push] | items [snoozed|closed|all] | retranscribe all|YYYY-MM-DD|"<notebook>" | done N | drop N | snooze N YYYY-MM-DD | reopen N | due N YYYY-MM-DD [time] | due N none | assign N <name> | assign N none | registry check [file] | token add <client> --scopes … [--sensitivity …] | token revoke <client> | token list');
+      console.log('usage: gleaner doctor | ingest [--sync] | digest [--push] | remind | health [--check] | weekly [--push] | items [snoozed|closed|all] | retranscribe all|YYYY-MM-DD|"<notebook>" | done N | drop N | snooze N YYYY-MM-DD | reopen N | due N YYYY-MM-DD [time] | due N none | assign N <name> | assign N none | registry check [file] | token add <client> --scopes … [--sensitivity …] | token revoke <client> | token list');
   }
 }
 main().then(() => process.exit(process.exitCode ?? 0)).catch((e) => { console.error(e.message); process.exit(1); });

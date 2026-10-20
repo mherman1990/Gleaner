@@ -15,7 +15,7 @@ It doesn't work in claude.ai in a browser or in the phone app.
    sudo docker exec herman-gleaner_web_1 node src/cli.js token add claude-home --scopes read,write,create --sensitivity all
    ```
    It prints the token once. Copy it.
-2. **Install the extension.** Get `gleaner-1.0.0.mcpb` (built with `npm run pack:mcpb`, in `gleaner-mcp/dist/`), then
+2. **Install the extension.** Get `gleaner-<version>.mcpb` (built with `npm run pack:mcpb`, in `gleaner-mcp/dist/`), then
    double-click it, or drag it onto the Claude app's **Settings → Extensions** page.
 3. **Fill in its settings:**
    - **Gleaner address:** `http://umbrel:3717` over Tailscale, or `http://umbrel.local:3717` at home. Use whatever opens
@@ -48,6 +48,9 @@ Developer → Edit Config). This needs [Node.js](https://nodejs.org) 18 or later
 | `open_loops` | Gleaner's markdown summary of the open items |
 | `get_notes` | Transcribed notes for a day, or a range |
 | `search_notes` | Pages whose text contains words |
+| `list_projects` | Projects from `projects.yaml`, with open, waiting and overdue counts, and unregistered tags |
+| `get_project` | One project's briefing: open items by kind, waiting, decisions (90 days), questions, recent page summaries, closes |
+| `get_health` | Whether Gleaner is working: alerts, when each job last succeeded, tablet sign-in, spend, memory, disk |
 | `list_events` | Recent changes, by whom |
 
 Reads are marked read-only. The Claude app may ask you to confirm the first change it makes.

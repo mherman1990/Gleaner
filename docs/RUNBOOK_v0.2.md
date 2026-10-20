@@ -90,6 +90,36 @@ To revoke a token (lost, or a client retired): `node src/cli.js token revoke <cl
 
 ---
 
+## Step 4 — Projects and health
+
+After updating Gleaner to the release with step 4 (v0.2.2).
+
+1. **Look at the health report** on the Pi:
+   ```
+   sudo docker exec herman-gleaner_web_1 node src/cli.js health
+   ```
+   `jobs` shows when the nightly batch, the daytime sync and the morning digest last succeeded. `source.auth` fills in
+   after the first check, at :07, :22, :37 or :52 past the hour between 6:00am and 10:00pm (or run `health --check`).
+   `usage` is the estimated API spend; `memory` and `disk` are the Pi's.
+2. **Update the Claude extension to 1.1.0** on each computer: drag `gleaner-1.1.0.mcpb` onto **Settings →
+   Extensions**, as in step 7. If it asks again, enter the same address and that computer's token. Then ask Claude
+   "brief me on <a project>": it should call `get_project`. Compare its open items with what you see for that tag in
+   Gleaner's browser page.
+3. **Alerts need a channel.** They go out through the notify channels, and Teams and ntfy are unset, so until
+   Telegram (step 5) an alert only shows in `/api/health` and `cli.js health` under `alerts`.
+4. **After step 5, the acceptance check:** stop the reMarkable sign-in for a moment by moving rmapi's config aside,
+   in the daytime (not during the 9:30pm batch):
+   ```
+   sudo mv ~/umbrel/app-data/herman-gleaner/data/secrets/rmapi.conf ~/umbrel/app-data/herman-gleaner/data/secrets/rmapi.conf.off
+   sudo docker exec herman-gleaner_web_1 node src/cli.js health --check
+   ```
+   One alert arrives. Running `health --check` again sends nothing (`last_sent` stays put) until 6 hours have passed.
+   Put it back and check again; the alert clears:
+   ```
+   sudo mv ~/umbrel/app-data/herman-gleaner/data/secrets/rmapi.conf.off ~/umbrel/app-data/herman-gleaner/data/secrets/rmapi.conf
+   sudo docker exec herman-gleaner_web_1 node src/cli.js health --check
+   ```
+
 ## Step 7 — Gleaner in the Claude app (local MCP)
 
 Do this on each computer (your own laptop and the ISA one), with a token for each, so the change log tells them apart.
@@ -101,7 +131,7 @@ Both need Tailscale on to reach the Pi away from home. The details and troublesh
    sudo docker exec herman-gleaner_web_1 node src/cli.js token add claude-work --scopes read,write,create --sensitivity all
    ```
    Each prints its token once.
-2. **Install the extension** (`gleaner-1.0.0.mcpb`) in the Claude app: double-click it, or drag it onto
+2. **Install the extension** (`gleaner-<version>.mcpb`, e.g. `gleaner-1.1.0.mcpb`) in the Claude app: double-click it, or drag it onto
    **Settings → Extensions**. Its settings ask for:
    - the **Gleaner address**: `http://umbrel:3717`, the Pi's Tailscale name. Use whatever opens Gleaner in this
      computer's browser, with `:3717`.

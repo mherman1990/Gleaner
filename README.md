@@ -49,8 +49,8 @@ On the tablet, create a `/Daily` folder and keep daily notebooks in it. See `doc
 |---|---|
 | Tablet | Write `✓14` / `x14` / `14 → Fri` on today's page; it's applied that night. `2pm` and `@Jen` on an item line set its time and assignee |
 | Browser | Umbrel → Gleaner: open loops with Done / Snooze / Drop (each with Undo) and Edit (text, due date, time, assigned to); snoozed and recently closed items with Reopen; *Ingest now* |
-| CLI | `node src/cli.js done 14` · `snooze 14 2026-10-23` · `reopen 14` · `due 14 2026-10-23 2pm` · `assign 14 Jen` · `items [snoozed\|closed\|all]` · `digest --push` · `retranscribe "To do"` |
-| Claude | Ask in Cowork. Desktop Commander can `curl` `/api/items`, `/api/notes`, `/api/search?q=`, `POST /api/items/14 {"status":"done"}`, and `POST /api/items {"text":"…"}` |
+| CLI | `node src/cli.js done 14` · `snooze 14 2026-10-23` · `reopen 14` · `due 14 2026-10-23 2pm` · `assign 14 Jen` · `items [snoozed\|closed\|all]` · `digest --push` · `retranscribe "To do"` · `health` |
+| Claude | The Gleaner extension in the Claude desktop app (`gleaner-mcp/`): list, add, tick off, snooze and edit items, read notes, brief on a project, check Gleaner's health |
 
 **Edits by hand win.** A field you set in the browser, CLI, or API (text, due date and time, assignee) is never
 overwritten when the page is read again. Fields you haven't touched still follow the page. Items assigned to someone
@@ -99,8 +99,8 @@ for the format. The real file never goes in this repo, which is public; any file
 `POST /api/items/:code {status: done|dropped|open|snoozed, until, text, due, due_time, person, assignee}` (any of them; `null` clears) ·
 `POST /api/items[?dry_run=1] {text, due, due_time, person, assignee, tags, priority, kind, source, source_ref}` (only `text` is needed) ·
 `GET /api/open-loops.md` · `GET /api/digest/today` · `GET /api/notes[?from&to]` · `GET /api/notes/:date` ·
-`GET /api/search?q=` · `GET /api/events[?since&client]` · `POST /api/ingest {mode: sync|batch}` · `POST /api/digest {push}` ·
-`GET /api/status`
+`GET /api/search?q=` · `GET /api/events[?since&client]` · `GET /api/projects` · `GET /api/projects/:tag[?days=30]` ·
+`GET /api/health` · `POST /api/ingest {mode: sync|batch}` · `POST /api/digest {push}` · `GET /api/status`
 
 **Tokens.** Every `/api` request needs `Authorization: Bearer <token>`, and each client has its own. Make one on the Pi:
 ```
@@ -154,6 +154,27 @@ last 24 hours). It returns at most 1,000; the header `X-More: true` means there 
 Items carry `tags`, `unregistered_tags` (tags the registry doesn't cover) and `person_ambiguous` (the person or
 assignee is a first name two registry people share). Both are worked out against the registry in use when the item
 is returned, so they follow its edits. `?tag=` takes a canonical tag or any alias, in any case.
+
+**Projects.** `GET /api/projects` lists the registry's projects, each with `open`, `waiting` (waiting on someone, or
+assigned to someone), `overdue`, `carried_max` (the most days an open item has been written on) and `last_activity`
+(the latest date a page or item of it was written, or an item closed), plus `unregistered`: tags in use that the
+registry doesn't cover, with how many items and pages carry them. `GET /api/projects/:tag?days=30` (the tag or an
+alias) is one project's briefing: open items by kind, `waiting`, `decisions` from the last 90 days, open
+`questions`, the `pages` written about it in the window (date, notebook, page and summary, never the text) and the
+items `closed` in the window. A page belongs to a project when it's tagged with it. An item belongs to the projects
+its own tags name, or, with no project tag of its own, to those of the pages it's written on. No model is called.
+At sensitivity `normal`, restricted projects aren't listed and their work isn't counted.
+
+**Health.** `GET /api/health` shows when each job (nightly batch, daytime sync, morning digest) last ran and last
+succeeded, whether the tablet sign-in worked at the last check, pages waiting to be read, API spend for the last day
+and 30 days (estimated from `prices` in the config), memory, free disk on `/data`, the registry's state and any active
+alerts. From 6:00am to 10:00pm a check runs every 15 minutes (at :07, :22, :37 and :52; no model calls) and alerts
+through the notify channels when last night's batch didn't finish by 6:00am, the tablet sign-in fails (one `rmapi ls`
+of the folder, skipped while an ingest is running, since two rmapi processes at once can both rewrite its config),
+the last two runs failed, memory is under 400 MB available or swap is over half full, `/data` has under 2 GB free,
+or the last 24 hours cost over 3× the 30-day daily average (and over $0.25). Each problem is alerted at most once
+every 6 hours, and an alert only counts once a channel accepted it. The limits are under `health` in `config.json`.
+`node src/cli.js health` prints the same report, and `health --check` runs a check now.
 
 ## Releases
 
