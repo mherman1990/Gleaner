@@ -58,6 +58,16 @@ export async function doctor() {
   return out;
 }
 
+/** For the health check: can the tablet be reached over SSH? { ok, detail }. */
+export async function authCheck() {
+  try {
+    await run('ssh', [...sshArgs(), 'uname'], { timeout: 20000 });
+    return { ok: true, detail: `reached ${config.source.sshHost}` };
+  } catch (e) {
+    return { ok: false, detail: `ssh ${config.source.sshHost}: ${(e.stderr?.toString() || e.message || 'failed').trim().slice(0, 300)}` };
+  }
+}
+
 export async function listDocuments() {
   await sync();
   const metas = readMeta();

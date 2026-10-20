@@ -56,6 +56,8 @@ test('a v0.1.4 database takes every migration in place and keeps its rows', () =
   assert.deepEqual(v014.prepare('SELECT DISTINCT source, source_ref FROM items').all(), [{ source: 'handwriting', source_ref: null }],
     'every item from before is handwritten');
   assert.equal(count('inbox'), 0);
+  assert.equal(count('alerts'), 0);
+  assert.deepEqual(v014.prepare('PRAGMA table_info(alerts)').all().map((c) => c.name), ['condition', 'active', 'first_seen', 'checked_at', 'last_sent', 'detail']);
   const add = v014.prepare(`INSERT INTO items (id, code, text, kind, tags, status, source, source_ref) VALUES (?, ?, 'x', 'action', '[]', 'open', 'email', 'm1')`);
   add.run('it_e1', 901);
   assert.throws(() => add.run('it_e2', 902), /UNIQUE/, 'one item per source and source_ref');

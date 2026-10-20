@@ -24,6 +24,8 @@ import { authenticate, apiEnabled, UI_CLIENT } from './auth.js';
 import { visibility, NoRegistryError } from './sensitivity.js';
 import { listEvents, parseSince } from './events.js';
 import { enqueue, preview } from './adapters/api-inbox.js';
+import { projectList, projectDetail } from './projects.js';
+import { healthReport } from './health.js';
 
 const PUBLIC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../public');
 // unregistered_tags and person_ambiguous are worked out against the current registry, so they follow its edits.
@@ -148,6 +150,33 @@ export function router() {
     // The item's number only if the client may see the item (one sent before by another client may be restricted).
     const item = itemByCode(out.code, after);
     res.status(out.result === 'created' ? 201 : 200).json({ result: out.result, ...(item ? { code: out.code, item: itemJson(item, after) } : {}) });
+  });
+
+  // The registry's projects with counts (open, waiting, overdue, carried_max, last_activity), and tags in use that the
+  // registry doesn't cover. At sensitivity normal, restricted projects aren't listed and only visible work is counted.
+  get('/projects', can('read'), (req, res) => {
+    const vis = view(req, res);
+    if (vis) res.json(projectList(vis));
+  });
+
+  // One project by its tag or an alias: open items by kind, waiting, decisions (90 days), questions, page summaries
+  // and closes in the window. ?days=30 (1–365). 404 for a tag that isn't a project, or a restricted one at normal.
+  get('/projects/:tag', can('read'), (req, res) => {
+    const days = req.query.days === undefined ? 30 : Number(req.query.days);
+    if (!Number.isInteger(days) || days < 1 || days > 365) return res.status(400).json({ error: 'days must be a whole number from 1 to 365' });
+    const vis = view(req, res);
+    if (!vis) return;
+    const out = projectDetail(req.params.tag, { days }, vis);
+    if (!out) return res.status(404).json({ error: 'no such project' });
+    const items = (list) => list.map((i) => itemJson(i, vis));
+    res.json({ ...out, open: Object.fromEntries(Object.entries(out.open).map(([k, v]) => [k, items(v)])),
+      waiting: items(out.waiting), decisions: items(out.decisions), questions: items(out.questions), closed: items(out.closed) });
+  });
+
+  // Jobs, the source's sign-in, pending pages, spend, memory, disk, registry and the health check's alerts.
+  get('/health', can('read'), (req, res) => {
+    const vis = view(req, res);
+    if (vis) res.json(healthReport(vis));
   });
 
   get('/open-loops.md', can('read'), (req, res) => {

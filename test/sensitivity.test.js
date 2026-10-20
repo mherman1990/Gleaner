@@ -108,6 +108,10 @@ const PROBES = () => ({
   '/search': ['/api/search?q=', '/api/search?q=MARKER', '/api/search?q=crater', '/api/search?q=dust'],
   '/events': ['/api/events?since=2000-01-01', '/api/events?since=2000-01-01&client=mayer', '/api/events?since=2000-01-01&client=handwriting'],
   '/status': ['/api/status'],
+  '/projects': ['/api/projects'],
+  '/projects/:tag': ['moonbase', 'mb', 'LUNAR', 'widget-report', 'wr', 'bridge-permit', 'orchard']
+    .flatMap((t) => [`/api/projects/${t}`, `/api/projects/${t}?days=365`]),
+  '/health': ['/api/health'],
 });
 /** What a normal-sensitivity token gets back from every route that it shouldn't. */
 async function leaks() {

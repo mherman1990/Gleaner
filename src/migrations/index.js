@@ -6,8 +6,9 @@ import * as m002 from './002-events.js';
 import * as m003 from './003-page-history.js';
 import * as m004 from './004-items-source.js';
 import * as m005 from './005-inbox.js';
+import * as m006 from './006-alerts.js';
 
-export const MIGRATIONS = [m001, m002, m003, m004, m005];
+export const MIGRATIONS = [m001, m002, m003, m004, m005, m006];
 
 /**
  * Apply every migration this database hasn't recorded. Returns the ids applied. Each one takes the write lock first

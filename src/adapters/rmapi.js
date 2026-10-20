@@ -34,6 +34,20 @@ export async function doctor() {
 }
 
 /**
+ * For the health check every 15 minutes: one `ls` of the folder, so a lapsed reMarkable sign-in shows up within the
+ * quarter hour (about 64 cloud calls a day, no downloads). { ok, detail }.
+ */
+export async function authCheck() {
+  try {
+    await rmapi(['ls', config.source.folder], { timeout: 60 * 1000 });
+    return { ok: true, detail: `listed ${config.source.folder}` };
+  } catch (e) {
+    const why = (e.stderr?.toString() || e.message || '').trim().split('\n').filter(Boolean).at(-1) || 'failed';
+    return { ok: false, detail: `rmapi ls ${config.source.folder}: ${why.slice(0, 300)}` };
+  }
+}
+
+/**
  * The JSON array from `rmapi -json find`. rmapi sends WARNING log lines to stdout too, so parse from the line
  * where the array starts rather than the whole buffer. Text-mode lines ("[f] /Daily/x") never match.
  */

@@ -1,6 +1,6 @@
 # Gleaner v0.2 — implementation plan
 
-Status: **agreed 2026-10-18** (decisions in §0). Steps 1 and 2 are merged (PRs #9, #10) and released as v0.2.0. Steps 3 and 7 are merged (#12, #13) and released as v0.2.1; the extension and the Gleaner Ledger artifact work on both of Matt's computers. Next: steps 4, 5, 6 and 8. After them comes the project wiki (`docs/WIKI_PLAN.md`, design agreed 2026-10-20). · Updated 2026-10-20
+Status: **agreed 2026-10-18** (decisions in §0). Steps 1 and 2 are merged (PRs #9, #10) and released as v0.2.0. Steps 3 and 7 are merged (#12, #13) and released as v0.2.1; the extension and the Gleaner Ledger artifact work on both of Matt's computers. Step 4 is in review, for v0.2.2. Then steps 5, 6 and 8. After them comes the project wiki (`docs/WIKI_PLAN.md`, design agreed 2026-10-20). · Updated 2026-10-20
 Implements `docs/INTEGRATIONS_SPEC.md` (the spec) under the rules in the kickoff prompt.
 Baseline: `main` at v0.1.5 (PR #7 merged: *Ingest now* waits for the read). The v0.1.5 tag is yours to push or skip.
 
@@ -98,6 +98,7 @@ Each step is one PR with the spec §5 acceptance test written as an automated te
 | Area | Changes |
 |---|---|
 | New files | `src/projects.js`; `src/health.js`; `src/migrations/006-alerts.js`; `test/projects.test.js`; `test/health.test.js` |
+| Decided while building | An item with no project tag of its own belongs to the projects of the pages it's on (the transcriber tags lines one by one). `batch_late` judges the latest batch run that started in the 24 h before 6:00am, so tonight's isn't judged until tomorrow, and a run that never started counts only once the service has been up 24 h. The check runs at :07, :22, :37 and :52 (`7-59/15 6-21`) instead of G20's `*/15 6-22`, clear of the minutes the ingests and the digest start, and skips the sign-in check while an ingest runs: two rmapi processes can both renew its token and rewrite its config. The extension gets `list_projects`, `get_project` and `get_health` (1.1.0). |
 | Changed | `src/server.js` (`/api/projects`, `/api/projects/:tag`, `/api/health`); `src/scheduler.js` (`healthCheck` job); `src/config.js` (thresholds, prices); `src/adapters/{rmapi,ssh,fixture}.js` (`authCheck`) |
 | Tests | `/api/projects/<tag>` (invented: `bridge-permit`) equals a count computed straight from the fixture rows. A failing `authCheck` raises one alert on the first check and none for the next 6 h (simulated clock), then one again. Each other condition is unit-tested with injected readings. |
 
@@ -168,8 +169,10 @@ Each migration test copies `test/fixtures/v0.1.4.sql` into a fresh database, mig
 | Version | Contents |
 |---|---|
 | v0.1.5 | Already on `main` (PR #7). Tag it now, or let v0.2.0 carry it. |
-| **v0.2.0** | Steps 1–4. Everything you need to create tokens and point Cowork, MCP, and Mayer at Gleaner. **Upgrade note:** copy `projects.yaml` to `/data`, then run `token add` for each client (steps in the runbook). |
-| **v0.2.1** | Step 5 (Telegram adapter). |
+| **v0.2.0** | Steps 1–2 (shipped 2026-10-19). **Upgrade note:** copy `projects.yaml` to `/data`, then run `token add` for each client (steps in the runbook). |
+| **v0.2.1** | Steps 3 and 7: the create endpoint, and the Claude app extension 1.0.0 (shipped 2026-10-20). |
+| **v0.2.2** | Step 4: projects and health endpoints, the 15-minute health check, extension 1.1.0. |
+| next | Step 5 (Telegram adapter). |
 | later | Step 5b (Signal adapter), once `herman-signal` runs. |
 
 Steps 6–8 ship files you install outside the container (skill, MCP, Cowork prompts), so they need no image release unless they turn up an API change.

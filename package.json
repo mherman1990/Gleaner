@@ -1,6 +1,6 @@
 {
   "name": "gleaner",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Gleaner — reMarkable handwritten daily notes → transcribed markdown, task ledger, and reminders. Self-hosted on Umbrel.",
   "type": "module",
   "main": "src/index.js",
